@@ -17,11 +17,22 @@ class WDAClient:
     Connects to http://localhost:8100 over USB port forwarding.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8100", timeout: float = 10.0):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str = "http://127.0.0.1:8100", timeout: float = 10.0):
+        # Force 127.0.0.1 to avoid IPv6 ::1 resolution failures on macOS
+        cleaned = base_url.rstrip("/")
+        if "localhost" in cleaned:
+            cleaned = cleaned.replace("localhost", "127.0.0.1")
+        self.base_url = cleaned
         self.timeout = timeout
         self.session_id: Optional[str] = None
         self._window_size: Optional[Tuple[int, int]] = None
+        
+        # Persistent HTTP connection pool to avoid opening/closing sockets constantly through usbmux
+        self.http = requests.Session()
+        from urllib3.util import Retry
+        from requests.adapters import HTTPAdapter
+        retries = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
+        self.http.mount("http://", HTTPAdapter(max_retries=retries, pool_connections=5, pool_maxsize=10))
 
     def _url(self, endpoint: str) -> str:
         return f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -29,37 +40,47 @@ class WDAClient:
     def is_alive(self) -> bool:
         """Checks if WDA server is responding on the given endpoint."""
         try:
-            resp = requests.get(self._url("/status"), timeout=2.5)
+            resp = self.http.get(self._url("/status"), timeout=2.5)
             return resp.status_code == 200
         except Exception:
             return False
 
     def get_status(self) -> Dict[str, Any]:
         """Returns WDA server status, device UDID, iOS version, and capabilities."""
-        resp = requests.get(self._url("/status"), timeout=self.timeout)
+        resp = self.http.get(self._url("/status"), timeout=self.timeout)
         if resp.status_code != 200:
             raise WDAClientError(f"Failed to fetch status: {resp.status_code} {resp.text}")
         data = resp.json()
         return data.get("value", data)
 
-    def ensure_session(self) -> str:
+    def ensure_session(self, force_new: bool = False) -> str:
         """Retrieves existing active session or creates a new one."""
-        if self.session_id:
+        if not force_new and self.session_id:
             try:
-                resp = requests.get(self._url(f"/session/{self.session_id}"), timeout=3.0)
+                resp = self.http.get(self._url(f"/session/{self.session_id}"), timeout=3.0)
                 if resp.status_code == 200:
-                    return self.session_id
+                    val = resp.json().get("value", {})
+                    if not isinstance(val, dict) or "error" not in val:
+                        return self.session_id
             except Exception:
                 pass
 
-        # Try to attach to active session from status or create new
-        status = self.get_status()
-        active_id = status.get("sessionId")
-        if active_id:
-            self.session_id = active_id
-            return self.session_id
+        # Try active session from status ONLY if it actually validates
+        if not force_new:
+            try:
+                status = self.get_status()
+                active_id = status.get("sessionId")
+                if active_id:
+                    resp = self.http.get(self._url(f"/session/{active_id}"), timeout=3.0)
+                    if resp.status_code == 200:
+                        val = resp.json().get("value", {})
+                        if not isinstance(val, dict) or "error" not in val:
+                            self.session_id = active_id
+                            return self.session_id
+            except Exception:
+                pass
 
-        # Create new session
+        # Create fresh session
         payload = {
             "capabilities": {
                 "alwaysMatch": {
@@ -68,7 +89,7 @@ class WDAClient:
                 }
             }
         }
-        resp = requests.post(self._url("/session"), json=payload, timeout=self.timeout)
+        resp = self.http.post(self._url("/session"), json=payload, timeout=self.timeout)
         if resp.status_code not in (200, 201):
             raise WDAClientError(f"Failed to create WDA session: {resp.status_code} {resp.text}")
         data = resp.json()
@@ -92,7 +113,7 @@ class WDAClient:
                     "snapshotTimeout": 1.0,
                 }
             }
-            requests.post(self._url(f"/session/{self.session_id}/appium/settings"), json=settings_payload, timeout=2.0)
+            self.http.post(self._url(f"/session/{self.session_id}/appium/settings"), json=settings_payload, timeout=2.0)
         except Exception:
             pass
 
@@ -106,11 +127,55 @@ class WDAClient:
             "toY": int(to_y),
             "duration": float(duration_sec),
         }
-        resp = requests.post(
+        resp = self.http.post(
             self._url(f"/session/{session_id}/wda/dragfromtoforduration"),
             json=payload,
             timeout=self.timeout,
         )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            # Recreate session and retry once
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/dragfromtoforduration"),
+                json=payload,
+                timeout=self.timeout,
+            )
+        return resp.status_code == 200
+
+    def tap(self, x: float, y: float, dwell_ms: int = 60) -> bool:
+        """Executes native WDA tap at coordinates (x, y)."""
+        session_id = self.ensure_session()
+        payload = {"x": int(x), "y": int(y)}
+        resp = self.http.post(
+            self._url(f"/session/{session_id}/wda/tap"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/tap"),
+                json=payload,
+                timeout=self.timeout,
+            )
+        return resp.status_code == 200
+
+    def double_tap(self, x: float, y: float, gap_ms: int = 120) -> bool:
+        """Executes native WDA double-tap (like heart gesture in TikTok)."""
+        session_id = self.ensure_session()
+        payload = {"x": int(x), "y": int(y)}
+        resp = self.http.post(
+            self._url(f"/session/{session_id}/wda/doubleTap"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/doubleTap"),
+                json=payload,
+                timeout=self.timeout,
+            )
         return resp.status_code == 200
 
     def get_window_size(self) -> Tuple[int, int]:
@@ -118,7 +183,10 @@ class WDAClient:
         if self._window_size:
             return self._window_size
         session_id = self.ensure_session()
-        resp = requests.get(self._url(f"/session/{session_id}/window/size"), timeout=self.timeout)
+        resp = self.http.get(self._url(f"/session/{session_id}/window/size"), timeout=self.timeout)
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.get(self._url(f"/session/{session_id}/window/size"), timeout=self.timeout)
         if resp.status_code != 200:
             raise WDAClientError(f"Failed to get window size: {resp.status_code} {resp.text}")
         val = resp.json().get("value", {})
@@ -129,7 +197,7 @@ class WDAClient:
 
     def screenshot(self) -> Image.Image:
         """Captures a screenshot of the iPhone screen and returns a PIL Image."""
-        resp = requests.get(self._url("/screenshot"), timeout=self.timeout)
+        resp = self.http.get(self._url("/screenshot"), timeout=self.timeout)
         if resp.status_code != 200:
             raise WDAClientError(f"Failed to capture screenshot: {resp.status_code} {resp.text}")
         data = resp.json()
@@ -143,7 +211,7 @@ class WDAClient:
         """Launches target app by bundle id (e.g. com.zhiliaoapp.musically)."""
         session_id = self.ensure_session()
         payload = {"bundleId": bundle_id}
-        resp = requests.post(
+        resp = self.http.post(
             self._url(f"/session/{session_id}/wda/apps/launch"),
             json=payload,
             timeout=self.timeout,
@@ -154,7 +222,7 @@ class WDAClient:
         """Terminates target app by bundle id."""
         session_id = self.ensure_session()
         payload = {"bundleId": bundle_id}
-        resp = requests.post(
+        resp = self.http.post(
             self._url(f"/session/{session_id}/wda/apps/terminate"),
             json=payload,
             timeout=self.timeout,
@@ -168,7 +236,7 @@ class WDAClient:
         """
         session_id = self.ensure_session()
         payload = {"actions": actions}
-        resp = requests.post(
+        resp = self.http.post(
             self._url(f"/session/{session_id}/actions"),
             json=payload,
             timeout=self.timeout,
@@ -177,47 +245,7 @@ class WDAClient:
             raise WDAClientError(f"Action execution failed: {resp.status_code} {resp.text}")
         return True
 
-    def tap(self, x: float, y: float, dwell_ms: int = 60) -> bool:
-        """Executes a single human-like tap at coordinates (x, y)."""
-        actions = [
-            {
-                "type": "pointer",
-                "id": "finger1",
-                "parameters": {"pointerType": "touch"},
-                "actions": [
-                    {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y)},
-                    {"type": "pointerDown", "button": 0},
-                    {"type": "pause", "duration": dwell_ms},
-                    {"type": "pointerUp", "button": 0},
-                ],
-            }
-        ]
-        return self.perform_w3c_actions(actions)
 
-    def double_tap(self, x: float, y: float, gap_ms: int = 120) -> bool:
-        """Executes an authentic double-tap (like heart gesture in TikTok)."""
-        # Slight jitter between first and second tap (humans never tap the exact same pixel twice)
-        x2 = x + 1
-        y2 = y - 1
-        actions = [
-            {
-                "type": "pointer",
-                "id": "finger1",
-                "parameters": {"pointerType": "touch"},
-                "actions": [
-                    {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y)},
-                    {"type": "pointerDown", "button": 0},
-                    {"type": "pause", "duration": 45},
-                    {"type": "pointerUp", "button": 0},
-                    {"type": "pause", "duration": gap_ms},
-                    {"type": "pointerMove", "duration": 0, "x": int(x2), "y": int(y2)},
-                    {"type": "pointerDown", "button": 0},
-                    {"type": "pause", "duration": 45},
-                    {"type": "pointerUp", "button": 0},
-                ],
-            }
-        ]
-        return self.perform_w3c_actions(actions)
 
     def dismiss_alert(self) -> bool:
         """Dismisses any active iOS system modal alert."""

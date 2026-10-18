@@ -73,7 +73,7 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
         while True:
             try:
                 if active_websockets:
-                    img = device_manager.get_screen()
+                    img = await asyncio.to_thread(device_manager.get_screen)
                     if img:
                         # Resize for bandwidth efficiency
                         thumb = img.copy()
@@ -87,10 +87,10 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
                                 await ws.send_text(payload)
                             except Exception:
                                 pass
-                await asyncio.sleep(0.35)  # ~3 FPS stream
+                await asyncio.sleep(1.2)  # Healthy ~1 FPS mirror without saturating USB/XCTest
             except Exception as e:
                 logger.debug(f"Screen stream error: {e}")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5)
 
     # REST Endpoints
     @app.get("/api/status")
@@ -146,11 +146,23 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
 
     @app.post("/api/actions/test-swipe")
     def action_test_swipe():
+        try:
+            w, h = device_manager.client.get_window_size()
+            runner.gesture.screen_width = w
+            runner.gesture.screen_height = h
+        except Exception:
+            pass
         success = runner.gesture.swipe_next_video()
         return {"status": "ok" if success else "failed"}
 
     @app.post("/api/actions/test-like")
     def action_test_like():
+        try:
+            w, h = device_manager.client.get_window_size()
+            runner.gesture.screen_width = w
+            runner.gesture.screen_height = h
+        except Exception:
+            pass
         success = runner.gesture.double_tap_like()
         return {"status": "ok" if success else "failed"}
 

@@ -85,8 +85,8 @@ class DeviceManager:
         Caches frames briefly to prevent WDA saturation.
         """
         now = time.time()
-        # Cap capture rate to max 8 fps to avoid overloading USB bandwidth
-        if self._last_screenshot and (now - self._last_screenshot_ts) < 0.12:
+        # Cap capture rate to avoid overloading USB bandwidth and iOS display server
+        if self._last_screenshot and (now - self._last_screenshot_ts) < 1.0:
             return self._last_screenshot
 
         try:

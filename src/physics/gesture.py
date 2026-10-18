@@ -96,113 +96,38 @@ class BiometricGestureEngine:
         Follows a natural thumb arc pivoted from the lower screen corner.
         """
         hand = (handedness or self.handedness).lower()
-        dur = duration_ms or random.randint(280, 420)
+        dur = duration_ms or random.randint(140, 210)
 
         # Screen dimensions
         w, h = self.screen_width, self.screen_height
 
-        # Start position (lower-middle screen)
-        # For right-handed, thumb tends to rest slightly to the right of center
-        center_bias_x = 0.58 if hand == "right" else 0.42
-        start_x = w * center_bias_x + random.uniform(-25, 25)
-        start_y = h * random.uniform(0.70, 0.78)
+        # Start position: Safe center quadrant (avoids caption box at bottom and action icons on right)
+        start_x = w * random.uniform(0.46, 0.54)
+        start_y = h * random.uniform(0.56, 0.64)
 
         # End position (upper-middle screen)
-        # Upward swipe arcs toward the hand pivot side or slightly inward
-        end_x = start_x + (random.uniform(-40, -10) if hand == "right" else random.uniform(10, 40))
-        end_y = h * random.uniform(0.18, 0.28)
+        end_x = start_x + (random.uniform(-16, -4) if hand == "right" else random.uniform(4, 16))
+        end_y = h * random.uniform(0.18, 0.24)
 
-        # Control points P1 and P2 creating the natural thumb arc
-        arc_deviation = (self.curve_deviation_px + random.uniform(-6, 8)) * (
-            1 if hand == "right" else -1
+        # Execute swift native flick (140-210ms prevents TikTok long-press menu activation)
+        return self.client.drag_from_to(
+            start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0
         )
-        p0 = (start_x, start_y)
-        p1 = (start_x + arc_deviation, start_y - (start_y - end_y) * 0.3)
-        p2 = (end_x + arc_deviation * 0.7, start_y - (start_y - end_y) * 0.7)
-        p3 = (end_x, end_y)
-
-        # Use 5 waypoint steps along Bézier curve for smooth curved motion without saturating XCTest
-        steps = 5
-        points = self._generate_bezier_curve(p0, p1, p2, p3, steps=steps)
-        durations = self._compute_velocity_durations(steps, dur)
-
-        # Build W3C Actions payload
-        actions_list: List[Dict[str, Any]] = [
-            {"type": "pointerMove", "duration": 0, "x": int(points[0][0]), "y": int(points[0][1])},
-            {"type": "pointerDown", "button": 0},
-            {"type": "pause", "duration": 20},
-        ]
-
-        for (px, py), step_dur in zip(points[1:], durations):
-            actions_list.append({
-                "type": "pointerMove",
-                "duration": step_dur,
-                "x": int(px),
-                "y": int(py),
-            })
-
-        actions_list.append({"type": "pointerUp", "button": 0})
-
-        action_seq = [
-            {
-                "type": "pointer",
-                "id": "finger1",
-                "parameters": {"pointerType": "touch"},
-                "actions": actions_list,
-            }
-        ]
-
-        try:
-            return self.client.perform_w3c_actions(action_seq)
-        except Exception:
-            # Fallback to high-speed native XCTest drag if W3C is busy
-            return self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0)
 
     def swipe_previous_video(self) -> bool:
         """Performs an organic downward swipe to return to the previous video."""
         w, h = self.screen_width, self.screen_height
-        dur = random.randint(300, 420)
+        dur = random.randint(150, 220)
 
-        start_x = w * 0.52 + random.uniform(-20, 20)
+        start_x = w * random.uniform(0.46, 0.54)
         start_y = h * random.uniform(0.24, 0.32)
-        end_x = start_x + random.uniform(-25, 25)
-        end_y = h * random.uniform(0.72, 0.80)
+        end_x = start_x + random.uniform(-15, 15)
+        end_y = h * random.uniform(0.68, 0.74)
 
-        p0 = (start_x, start_y)
-        p1 = (start_x + random.uniform(-15, 15), start_y + (end_y - start_y) * 0.3)
-        p2 = (end_x + random.uniform(-15, 15), start_y + (end_y - start_y) * 0.7)
-        p3 = (end_x, end_y)
-
-        steps = 5
-        points = self._generate_bezier_curve(p0, p1, p2, p3, steps=steps)
-        durations = self._compute_velocity_durations(steps, dur)
-
-        actions_list: List[Dict[str, Any]] = [
-            {"type": "pointerMove", "duration": 0, "x": int(points[0][0]), "y": int(points[0][1])},
-            {"type": "pointerDown", "button": 0},
-            {"type": "pause", "duration": 20},
-        ]
-        for (px, py), step_dur in zip(points[1:], durations):
-            actions_list.append({
-                "type": "pointerMove",
-                "duration": step_dur,
-                "x": int(px),
-                "y": int(py),
-            })
-        actions_list.append({"type": "pointerUp", "button": 0})
-
-        action_seq = [
-            {
-                "type": "pointer",
-                "id": "finger1",
-                "parameters": {"pointerType": "touch"},
-                "actions": actions_list,
-            }
-        ]
-        try:
-            return self.client.perform_w3c_actions(action_seq)
-        except Exception:
-            return self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0)
+        # Execute native Apple XCTest downward drag
+        return self.client.drag_from_to(
+            start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0
+        )
 
     def micro_flick(self) -> bool:
         """Simulates an accidental small thumb twitch or partial scroll."""
