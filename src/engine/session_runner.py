@@ -192,8 +192,10 @@ class SessionRunner:
         logger.info("Initializing TikTok session loop...")
         self._broadcast_status("Connecting to iPhone & Launching TikTok...")
 
-        # 1. Ensure WDA connection and fetch screen dimensions
+        # 1. Ensure WDA connection, anti-freeze settings, and fetch screen dimensions
         try:
+            self.wda.ensure_session()
+            self.wda._apply_session_settings()
             w, h = self.wda.get_window_size()
             self.gesture.screen_width = w
             self.gesture.screen_height = h
@@ -205,8 +207,11 @@ class SessionRunner:
 
         # 2. Launch TikTok App
         bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
-        self.wda.launch_app(bundle_id)
-        time.sleep(random.uniform(2.5, 4.0))
+        try:
+            self.wda.launch_app(bundle_id)
+        except Exception as e:
+            logger.debug(f"Launch app notice: {e}")
+        time.sleep(random.uniform(1.5, 2.5))
 
         # 3. Optional Search Seeding
         niche_cfg = self.config.get("niche", {})

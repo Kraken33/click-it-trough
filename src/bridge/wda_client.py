@@ -73,7 +73,45 @@ class WDAClient:
             raise WDAClientError(f"Failed to create WDA session: {resp.status_code} {resp.text}")
         data = resp.json()
         self.session_id = data.get("sessionId") or data.get("value", {}).get("sessionId")
+
+        # Disable XCTest quiescence waiting to prevent UI freezing in video apps
+        self._apply_session_settings()
         return self.session_id
+
+    def _apply_session_settings(self):
+        """Disables quiescence and idle waiting in XCTest so video animations don't block input."""
+        if not self.session_id:
+            return
+        try:
+            settings_payload = {
+                "settings": {
+                    "waitForQuiescence": False,
+                    "waitForIdleTimeout": 0,
+                    "animationCoolOffTimeout": 0,
+                    "shouldUseTestManagerForVisibilityDetection": False,
+                    "snapshotTimeout": 1.0,
+                }
+            }
+            requests.post(self._url(f"/session/{self.session_id}/appium/settings"), json=settings_payload, timeout=2.0)
+        except Exception:
+            pass
+
+    def drag_from_to(self, from_x: float, from_y: float, to_x: float, to_y: float, duration_sec: float = 0.35) -> bool:
+        """Executes native XCTest drag from (from_x, from_y) to (to_x, to_y). Fast, smooth, and non-blocking."""
+        session_id = self.ensure_session()
+        payload = {
+            "fromX": int(from_x),
+            "fromY": int(from_y),
+            "toX": int(to_x),
+            "toY": int(to_y),
+            "duration": float(duration_sec),
+        }
+        resp = requests.post(
+            self._url(f"/session/{session_id}/wda/dragfromtoforduration"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        return resp.status_code == 200
 
     def get_window_size(self) -> Tuple[int, int]:
         """Returns (width, height) of the device screen in UI points."""

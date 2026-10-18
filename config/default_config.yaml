@@ -8,7 +8,7 @@ device:
   screen_height: 852                   # Points (will auto-detect from WDA)
 
 niche:
-  seed_search_enabled: true
+  seed_search_enabled: false
   seed_terms:
     - "tech innovation"
     - "ai coding tools"

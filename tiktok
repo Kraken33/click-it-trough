@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Convenience runner that automatically uses the project's virtual environment
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PY="$DIR/.venv/bin/python3"
+
+if [ ! -f "$VENV_PY" ]; then
+    echo "❌ Error: Virtual environment not found at $DIR/.venv"
+    echo "Please create it using: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    exit 1
+fi
+
+exec "$VENV_PY" -m src.main "$@"
