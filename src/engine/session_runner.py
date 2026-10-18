@@ -205,32 +205,16 @@ class SessionRunner:
             self._broadcast_status(f"Error connecting to iPhone: {e}")
             return
 
-        # 2. Launch TikTok App
-        bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
-        try:
-            self.wda.launch_app(bundle_id)
-        except Exception as e:
-            logger.debug(f"Launch app notice: {e}")
-        time.sleep(random.uniform(1.5, 2.5))
-
-        # 3. Optional Search Seeding
-        niche_cfg = self.config.get("niche", {})
-        if niche_cfg.get("seed_search_enabled") and niche_cfg.get("seed_terms"):
-            seed_term = random.choice(niche_cfg["seed_terms"])
-            self._broadcast_status(f"Seeding algorithm with: '{seed_term}'")
-            self.trainer.perform_search_seeding(
-                self.wda,
-                self.gesture,
-                seed_term,
-                videos_to_watch=niche_cfg.get("seed_videos_per_term", 3),
-            )
+        # 2. Check if TikTok is open (do not force launch to avoid XCTest process hooking)
+        time.sleep(0.5)
 
         start_ts = time.time()
         max_duration_sec = (duration_minutes * 60) if duration_minutes else None
         probs = self.config.get("probabilities", {})
         safety_cfg = self.config.get("safety", {})
+        enable_ocr = self.config.get("vision", {}).get("enabled", False)
 
-        # Main Browsing Loop
+        # Main Lightweight Browsing Loop (Zero-Weight Pure Touch Mode)
         while not self._stop_event.is_set():
             # Check pause state
             while self._pause_event.is_set():
@@ -250,55 +234,38 @@ class SessionRunner:
                 self._broadcast_status("Daily video safety limit reached.")
                 break
 
-            # Step 1: Capture screenshot
-            self._broadcast_status("Analyzing video content...")
-            screen_img = self.device_manager.get_screen()
-            if not screen_img:
-                time.sleep(1.0)
-                continue
+            # Optional OCR only if user enabled it in config
+            is_niche = False
+            is_ad = False
+            if enable_ocr:
+                try:
+                    screen_img = self.device_manager.get_screen()
+                    if screen_img:
+                        caption = self.ocr.extract_caption_and_tags(screen_img)
+                        is_ad = self.detector.is_sponsored(caption)
+                        _, matched_kws = self.trainer.evaluate_relevance(caption)
+                        is_niche = len(matched_kws) > 0
+                        self.stats.current_caption = caption[:100]
+                except Exception:
+                    pass
 
-            # Step 2: Security & Captcha Check
-            if self.detector.check_for_captcha(screen_img):
-                alert_path = self.safety.trigger_captcha_alert(screen_img)
-                self.stats.state = SessionState.CAPTCHA_HALTED
-                self._broadcast_status(f"Captcha challenge detected! Saved {alert_path}")
-                self._pause_event.set()
-                continue
-
-            # Step 3: Check for modal popups
-            popup_type = self.detector.detect_popup(screen_img)
-            if popup_type:
-                self._broadcast_status(f"Dismissing popup: {popup_type}")
-                dx, dy = self.detector.get_dismiss_coordinate(popup_type, w, h)
-                self.wda.tap(dx, dy)
-                self.wda.dismiss_alert()
-                time.sleep(1.2)
-                continue
-
-            # Step 4: Extract Caption & Tags via OCR
-            caption = self.ocr.extract_caption_and_tags(screen_img)
-            is_ad = self.detector.is_sponsored(caption)
-            relevance, matched_kws = self.trainer.evaluate_relevance(caption)
-            is_niche = len(matched_kws) > 0
-
-            if is_niche:
-                self.stats.niche_matched_count += 1
-
-            self.stats.current_caption = caption[:120] if caption else "(No caption detected)"
-            self.stats.current_matched_keywords = matched_kws
-
-            # Step 5: Calculate Dwell Time
+            # Calculate Dwell Time (natural human curve: e.g. 6 to 18 seconds)
             dwell = self._sample_dwell_time(is_niche, is_ad)
             dwell_start = time.time()
 
-            # Step 6: Watch Video with Countdown & Skip Support
-            action_desc = "Fast-skipping Ad" if is_ad else (f"Watching Niche Video ({', '.join(matched_kws)})" if is_niche else "Watching FYP Video")
+            action_desc = "Watching FYP Video"
             while time.time() - dwell_start < dwell:
                 if self._stop_event.is_set():
                     break
                 if self._skip_flag.is_set():
                     self._skip_flag.clear()
                     break
+                remaining = max(0.0, dwell - (time.time() - dwell_start))
+                self.stats.current_dwell_remaining = round(remaining, 1)
+                self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
+                time.sleep(0.3)
+
+            self.stats.videos_watched += 1
                 remaining = max(0.0, dwell - (time.time() - dwell_start))
                 self.stats.current_dwell_remaining = round(remaining, 1)
                 self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")

@@ -467,6 +467,19 @@ export default function App() {
             >
               <SkipForward className="w-3.5 h-3.5" /> Skip Current Video Now
             </button>
+
+            <button
+              onClick={async () => {
+                const res = await fetch('/api/actions/capture-screen', { method: 'POST' });
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data.image) setScreenB64(data.image);
+                }
+              }}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-400 border border-gray-800 text-xs font-medium transition"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-pink-400" /> Capture Screen Snapshot
+            </button>
           </div>
         </div>
 

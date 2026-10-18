@@ -65,34 +65,20 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
     async def startup_event():
         app.state.loop = asyncio.get_running_loop()
         scheduler.start()
-        # Launch background screen frame broadcaster
-        asyncio.create_task(screen_broadcast_loop())
-
-    async def screen_broadcast_loop():
-        """Periodically captures screen and broadcasts base64 thumbnail over WebSocket."""
-        while True:
-            try:
-                if active_websockets:
-                    img = await asyncio.to_thread(device_manager.get_screen)
-                    if img:
-                        # Resize for bandwidth efficiency
-                        thumb = img.copy()
-                        thumb.thumbnail((360, 780))
-                        buf = io.BytesIO()
-                        thumb.save(buf, format="JPEG", quality=65)
-                        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                        payload = json.dumps({"type": "screen", "image": b64})
-                        for ws in list(active_websockets):
-                            try:
-                                await ws.send_text(payload)
-                            except Exception:
-                                pass
-                await asyncio.sleep(1.2)  # Healthy ~1 FPS mirror without saturating USB/XCTest
-            except Exception as e:
-                logger.debug(f"Screen stream error: {e}")
-                await asyncio.sleep(1.5)
 
     # REST Endpoints
+    @app.post("/api/actions/capture-screen")
+    def action_capture_screen():
+        """Captures a single screenshot on-demand without continuous background load."""
+        img = device_manager.get_screen()
+        if img:
+            thumb = img.copy()
+            thumb.thumbnail((360, 780))
+            buf = io.BytesIO()
+            thumb.save(buf, format="JPEG", quality=75)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            return {"status": "ok", "image": b64}
+        return {"status": "error"}
     @app.get("/api/status")
     def get_status():
         conn = device_manager.check_connection()
