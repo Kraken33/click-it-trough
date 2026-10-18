@@ -208,6 +208,17 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
         runner.close_app()
         return {"status": "ok"}
 
+    @app.post("/api/actions/recover-feed")
+    def action_recover_feed():
+        try:
+            w, h = device_manager.client.get_window_size()
+            runner.gesture.screen_width = w
+            runner.gesture.screen_height = h
+        except Exception:
+            pass
+        recovered, state = runner.recover_to_feed()
+        return {"status": "ok" if recovered else "failed", "recovered": recovered, "state": state}
+
     @app.post("/api/actions/trigger-search")
     def action_trigger_search(term: Optional[str] = None, videos_to_watch: Optional[int] = None):
         """Triggers TikTok search seeding on device to narrow down FYP algorithm to target niche."""

@@ -216,6 +216,7 @@ export default function App() {
   const [isTestingComment, setIsTestingComment] = useState(false);
   const [isClosingApp, setIsClosingApp] = useState(false);
   const [isTestingSwipe, setIsTestingSwipe] = useState(false);
+  const [isRecoveringFeed, setIsRecoveringFeed] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -529,6 +530,47 @@ export default function App() {
     }
   };
 
+  const handleRecoverFeed = async () => {
+    if (isRecoveringFeed) return;
+    try {
+      setIsRecoveringFeed(true);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: "🔍 Detecting screen state and recovering to video feed...",
+          type: "info",
+        },
+        ...logs.slice(0, 50),
+      ]);
+      const res = await fetch('/api/actions/recover-feed', { method: 'POST' });
+      const data = await res.json().catch(() => ({ status: 'error' }));
+      if (res.ok && data.status === 'ok') {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `✅ Returned to video feed (from ${data.state || 'overlay'})`,
+            type: "info",
+          },
+          ...logs.slice(0, 50),
+        ]);
+        fetchScreen();
+      } else {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `⚠️ Feed recovery: ${data.state || 'Could not verify feed'}`,
+            type: "ad",
+          },
+          ...logs.slice(0, 50),
+        ]);
+      }
+    } catch (e: any) {
+      console.error('Recover feed error', e);
+    } finally {
+      setIsRecoveringFeed(false);
+    }
+  };
+
   const handleTriggerSearch = async (term?: string) => {
     setIsSearching(true);
     setActiveSearchTerm(term || 'Niche Seeds');
@@ -810,6 +852,21 @@ export default function App() {
                 </>
               ) : (
                 'Close App 📱'
+              )}
+            </button>
+            <button
+              onClick={handleRecoverFeed}
+              disabled={isRecoveringFeed}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-teal-400 transition border border-gray-700 flex items-center gap-1.5 ${isRecoveringFeed ? 'opacity-70 cursor-not-allowed' : ''}`}
+              title="Detect page state (comments, share, profile, etc.) and return to TikTok video feed"
+            >
+              {isRecoveringFeed ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-400" />
+                  Recovering...
+                </>
+              ) : (
+                'Recover Feed 🔄'
               )}
             </button>
             {(stats.state === 'RUNNING' || stats.state === 'PAUSED' || isSearching) && (

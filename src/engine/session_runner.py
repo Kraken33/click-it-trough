@@ -284,11 +284,90 @@ class SessionRunner:
         self._broadcast_status("Comment drawer close attempted.")
         return False
 
+    def recover_to_feed(self, max_attempts: int = 3) -> Tuple[bool, str]:
+        """
+        Detects what page or overlay the device is currently on (comments, share sheet,
+        story, user profile, search, popup, or alternative tab) and executes the
+        appropriate targeted actions to safely return to the TikTok video feed.
+        Returns (is_recovered_to_feed, final_state_description).
+        """
+        w, h = self.gesture.screen_width, self.gesture.screen_height
+
+        for attempt in range(1, max_attempts + 1):
+            screen = self.device_manager.get_screen()
+            if not screen:
+                time.sleep(1.0)
+                continue
+
+            state, markers = self.detector.detect_screen_state(screen)
+            marker_str = f"[{', '.join(markers[:2])}]" if markers else ""
+            logger.info(f"Screen state detection (attempt {attempt}/{max_attempts}): '{state}' {marker_str}")
+
+            if state == "feed":
+                self._broadcast_status("Confirmed on video feed ✅")
+                return True, "feed"
+
+            self._broadcast_status(f"Recovery: Detected '{state}' {marker_str}. Returning to video feed...")
+
+            if state == "comments":
+                # Close comment sheet drawer
+                self.gesture.close_comments_drawer()
+            elif state == "share":
+                # Dismiss share sheet by tapping upper dimmed video backdrop
+                self.wda.tap(w * 0.50, h * 0.25)
+            elif state == "story":
+                # Dismiss story viewer by tapping top-right 'X'
+                self.wda.tap(w * 0.93, h * 0.09)
+            elif state == "profile":
+                # Author profile opened: edge-swipe right and tap top-left '<' arrow
+                self.wda.press_and_drag_with_velocity(w * 0.05, h * 0.50, w * 0.75, h * 0.50, velocity=2600.0)
+                self.wda.tap(w * 0.08, h * 0.07)
+            elif state == "search":
+                # Search opened: tap top-left back arrow or cancel
+                self.wda.tap(w * 0.08, h * 0.07)
+                self.wda.tap(w * 0.92, h * 0.07)
+            elif state == "popup":
+                popup_type = markers[0] if markers else "generic_modal"
+                dismiss_x, dismiss_y = self.detector.get_dismiss_coordinate(popup_type, w, h)
+                self.wda.tap(dismiss_x, dismiss_y)
+            elif state == "homescreen":
+                # TikTok was minimized or closed: re-launch app
+                self.ensure_app_open()
+            else:
+                # 'other_tab' or 'unknown': tap bottom 'Home' tab and top 'For You' tab
+                self.wda.tap(w * 0.10, h * 0.95)
+                time.sleep(0.5)
+                self.wda.tap(w * 0.78, h * 0.074)
+
+            time.sleep(1.2)
+
+            # Check if now on feed
+            check_screen = self.device_manager.get_screen()
+            if check_screen:
+                new_state, _ = self.detector.detect_screen_state(check_screen)
+                if new_state == "feed":
+                    self._broadcast_status(f"Successfully recovered from '{state}' to video feed ✅")
+                    logger.info(f"Successfully recovered from '{state}' to video feed.")
+                    return True, state
+
+        # Final fallback: tap Home tab & For You tab
+        self.wda.tap(w * 0.10, h * 0.95)
+        time.sleep(0.6)
+        self.wda.tap(w * 0.78, h * 0.074)
+        time.sleep(1.0)
+        final_screen = self.device_manager.get_screen()
+        if final_screen:
+            final_state, _ = self.detector.detect_screen_state(final_screen)
+            return (final_state == "feed"), final_state
+        return False, "unknown"
+
     def swipe_next_video_verified(self, max_retries: int = 3) -> Tuple[bool, str]:
         """
         Executes swipe to next video and verifies that the video changed
         by checking that the likes count (and content) changed via Vision OCR.
         If the video did not change (likes stayed identical), it retries the swipe.
+        If 3 swipe attempts fail, detects current screen state (comments, share, etc.)
+        and recovers back to the video feed.
         Returns (has_changed, reason_description).
         """
         before_img = self.device_manager.get_screen()
@@ -328,7 +407,37 @@ class SessionRunner:
                     self._broadcast_status(f"Video unchanged ({reason}), retrying...")
                     time.sleep(0.4)
 
-        return False, last_reason
+        # 3 swipe attempts failed: detect screen state and initiate recovery back to video feed
+        logger.warning(
+            f"All {max_retries} swipe attempts failed. Detecting screen state and initiating recovery to video feed..."
+        )
+        self._broadcast_status("3 swipe attempts failed. Detecting screen state to return to video feed...")
+        recovered, current_state = self.recover_to_feed()
+        if recovered:
+            self._broadcast_status(f"Recovered from '{current_state}' back to video feed. Retrying swipe...")
+            logger.info(f"Successfully recovered from '{current_state}' back to feed. Executing verified swipe...")
+            time.sleep(0.5)
+            feed_img = self.device_manager.get_screen()
+            feed_likes, feed_sig = (
+                self.detector.extract_likes_and_signature(feed_img) if feed_img else (None, "")
+            )
+            self.gesture.swipe_next_video(velocity=3200.0)
+            time.sleep(1.0)
+            post_swipe_img = self.device_manager.get_screen()
+            if post_swipe_img:
+                changed, reason = self.detector.did_video_change(
+                    feed_img or post_swipe_img,
+                    post_swipe_img,
+                    before_likes=feed_likes,
+                    before_sig=feed_sig,
+                )
+                if changed:
+                    self._broadcast_status(f"Video changed after recovery [{reason}]")
+                    return True, f"Recovered from {current_state} & changed [{reason}]"
+                return False, f"Recovered from {current_state} but swipe unchanged [{reason}]"
+            return True, f"Recovered from {current_state}"
+
+        return False, f"Failed to recover to feed from '{current_state}'"
 
     def stop(self):
         """Signals the session to terminate gracefully."""
