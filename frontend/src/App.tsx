@@ -19,6 +19,7 @@ import {
   Clock,
   Sparkles,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 
 interface SessionStats {
@@ -67,6 +68,8 @@ export default function App() {
     state: 'IDLE',
   });
   const [screenB64, setScreenB64] = useState<string | null>(null);
+  const [autoMirror, setAutoMirror] = useState<boolean>(true);
+  const [isFetchingScreen, setIsFetchingScreen] = useState<boolean>(false);
   const [config, setConfig] = useState<any>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(15);
   const [activeTab, setActiveTab] = useState<'activity' | 'niche' | 'behavior' | 'schedule'>('activity');
@@ -133,6 +136,39 @@ export default function App() {
       wsRef.current?.close();
     };
   }, []);
+
+  const fetchScreen = async () => {
+    try {
+      setIsFetchingScreen(true);
+      const res = await fetch('/api/actions/capture-screen', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.image) setScreenB64(data.image);
+      }
+    } catch (e) {
+      console.debug('Screen fetch error', e);
+    } finally {
+      setIsFetchingScreen(false);
+    }
+  };
+
+  // Auto-mirror effect: periodic capture when active or on mount
+  useEffect(() => {
+    fetchScreen();
+    const timer = setInterval(() => {
+      if (autoMirror) {
+        fetchScreen();
+      }
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [autoMirror]);
+
+  // Refresh screen immediately when video changes or action starts
+  useEffect(() => {
+    if (stats.videos_watched > 0 || stats.state === 'RUNNING') {
+      fetchScreen();
+    }
+  }, [stats.videos_watched, stats.state]);
 
   const fetchStatus = async () => {
     try {
@@ -341,6 +377,33 @@ export default function App() {
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 max-w-7xl mx-auto w-full">
         {/* Left Column: iPhone Screen Mirror & Session Controls (5 cols) */}
         <div className="lg:col-span-5 flex flex-col items-center">
+          {/* Mirror Header Controls */}
+          <div className="w-[340px] flex items-center justify-between mb-2 px-1">
+            <span className="text-xs font-medium text-gray-400 flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${screenB64 ? 'bg-emerald-400 animate-pulse' : 'bg-gray-600'}`} />
+              Display Mirror
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAutoMirror(!autoMirror)}
+                className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium border transition ${
+                  autoMirror
+                    ? 'bg-pink-500/20 text-pink-400 border-pink-500/30'
+                    : 'bg-gray-800 text-gray-400 border-gray-700'
+                }`}
+              >
+                {autoMirror ? 'Auto (2s) ON' : 'Auto OFF'}
+              </button>
+              <button
+                onClick={fetchScreen}
+                title="Refresh Screen"
+                className="p-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isFetchingScreen ? 'animate-spin text-pink-400' : ''}`} />
+              </button>
+            </div>
+          </div>
+
           {/* iPhone Mockup Frame */}
           <div className="relative w-[340px] h-[690px] bg-black rounded-[48px] p-3 shadow-2xl border-4 border-gray-700 ring-1 ring-gray-600/30 flex flex-col items-center">
             {/* Dynamic Island / Speaker */}
@@ -357,12 +420,14 @@ export default function App() {
                   className="w-full h-full object-cover"
                 />
               ) : (
-                <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-gray-500">
+                <div
+                  onClick={fetchScreen}
+                  className="flex-1 flex flex-col items-center justify-center p-6 text-center text-gray-500 cursor-pointer hover:bg-white/[0.02] transition"
+                >
                   <Smartphone className="w-16 h-16 stroke-1 text-gray-600 mb-3" />
                   <p className="text-sm font-medium text-gray-400">Live Mirror Standby</p>
                   <p className="text-xs text-gray-500 mt-1">
-                    Connect iPhone over USB and run <br />
-                    <code className="text-pink-400 bg-gray-900 px-2 py-0.5 rounded mt-1 inline-block">./scripts/start_tunnel.sh</code>
+                    Click to load screen snapshot
                   </p>
                 </div>
               )}
