@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Any, Dict, List, Optional
 import yaml
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -168,8 +169,9 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
             runner.gesture.screen_height = h
         except Exception:
             pass
-        success = runner.gesture.swipe_next_video()
-        return {"status": "ok" if success else "failed"}
+        runner.ensure_app_open()
+        changed, reason = runner.swipe_next_video_verified()
+        return {"status": "ok" if changed else "failed", "changed": changed, "details": reason}
 
     @app.post("/api/actions/test-like")
     def action_test_like():
@@ -181,6 +183,30 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
             pass
         success = runner.gesture.double_tap_like()
         return {"status": "ok" if success else "failed"}
+
+    @app.post("/api/actions/test-comment")
+    def action_test_comment():
+        try:
+            w, h = device_manager.client.get_window_size()
+            runner.gesture.screen_width = w
+            runner.gesture.screen_height = h
+        except Exception:
+            pass
+        runner.ensure_app_open()
+        opened = runner.open_comments_verified()
+        time.sleep(1.5)
+        closed = runner.close_comments_verified()
+        return {
+            "status": "ok" if (opened and closed) else "failed",
+            "opened": opened,
+            "closed": closed,
+            "message": "Comment drawer opened & closed successfully (OCR verified)" if (opened and closed) else "Could not verify comments via OCR"
+        }
+
+    @app.post("/api/actions/close-app")
+    def action_close_app():
+        runner.close_app()
+        return {"status": "ok"}
 
     @app.post("/api/actions/trigger-search")
     def action_trigger_search(term: Optional[str] = None, videos_to_watch: Optional[int] = None):

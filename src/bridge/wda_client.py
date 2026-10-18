@@ -297,25 +297,56 @@ class WDAClient:
 
     def launch_app(self, bundle_id: str) -> bool:
         """Launches target app by bundle id (e.g. com.zhiliaoapp.musically)."""
-        session_id = self.ensure_session()
-        payload = {"bundleId": bundle_id}
-        resp = self.http.post(
-            self._url(f"/session/{session_id}/wda/apps/launch"),
-            json=payload,
-            timeout=self.timeout,
-        )
-        return resp.status_code == 200
+        try:
+            session_id = self.ensure_session()
+            payload = {"bundleId": bundle_id}
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/apps/launch"),
+                json=payload,
+                timeout=self.timeout,
+            )
+            if resp.status_code != 200 or "invalid session id" in resp.text:
+                session_id = self.ensure_session(force_new=True)
+                resp = self.http.post(
+                    self._url(f"/session/{session_id}/wda/apps/launch"),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error launching app {bundle_id}: {e}")
+            return False
 
     def terminate_app(self, bundle_id: str) -> bool:
         """Terminates target app by bundle id."""
-        session_id = self.ensure_session()
-        payload = {"bundleId": bundle_id}
-        resp = self.http.post(
-            self._url(f"/session/{session_id}/wda/apps/terminate"),
-            json=payload,
-            timeout=self.timeout,
-        )
-        return resp.status_code == 200
+        try:
+            session_id = self.ensure_session()
+            payload = {"bundleId": bundle_id}
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/apps/terminate"),
+                json=payload,
+                timeout=self.timeout,
+            )
+            if resp.status_code != 200 or "invalid session id" in resp.text:
+                session_id = self.ensure_session(force_new=True)
+                resp = self.http.post(
+                    self._url(f"/session/{session_id}/wda/apps/terminate"),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error terminating app {bundle_id}: {e}")
+            return False
+
+    def homescreen(self) -> bool:
+        """Navigates to the iOS home screen."""
+        try:
+            resp = self.http.post(self._url("/wda/homescreen"), timeout=self.timeout)
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error navigating to homescreen: {e}")
+            return False
 
     def perform_w3c_actions(self, actions: List[Dict[str, Any]]) -> bool:
         """

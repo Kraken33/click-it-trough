@@ -70,9 +70,9 @@ niche:
   seed_video_dwell_max_sec: 15
   seed_videos_per_term: 3
 dwell_time:
-  min_seconds: 4.0
-  max_seconds: 22.0
-  mean_seconds: 11.0
+  min_seconds: 3
+  max_seconds: 9.5
+  mean_seconds: 11
   niche_match_multiplier_min: 1.8
   niche_match_multiplier_max: 2.8
   niche_match_multiplier: 2.2

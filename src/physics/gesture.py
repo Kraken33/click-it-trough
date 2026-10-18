@@ -90,59 +90,73 @@ class BiometricGestureEngine:
         self,
         duration_ms: Optional[int] = None,
         handedness: Optional[str] = None,
+        velocity: Optional[float] = None,
     ) -> bool:
         """
         Performs an organic upward swipe to transition to the next TikTok video.
-        Uses a safe horizontal corridor (70%-78% width for right-handed, 24%-32% for left-handed)
-        to completely avoid center carousel pagination dots (35%-65%) and right action sidebar buttons (>86%).
+        Uses native pressAndDragWithVelocity with zero touch-down pause and high flick
+        velocity (2800-3500 pt/s) to ensure 100% stable pagination on TikTok's feed.
         """
         hand = (handedness or self.handedness).lower()
-
-        # Screen dimensions
         w, h = self.screen_width, self.screen_height
-
-        dur = (duration_ms or random.randint(180, 240)) / 1000.0
 
         # Safe horizontal corridor:
         # Avoids center carousel dots (35%-65% width) and sidebar icons (86%-100% width)
         if hand == "left":
             start_x = w * random.uniform(0.24, 0.32)
-            end_x = start_x + random.uniform(8, 16)
+            end_x = start_x + random.uniform(6, 14)
         else:
-            # Right-hand safe corridor: 70% to 78% width
-            start_x = w * random.uniform(0.70, 0.78)
-            end_x = start_x - random.uniform(8, 16)
+            # Right-hand safe corridor: 68% to 76% width
+            start_x = w * random.uniform(0.68, 0.76)
+            end_x = start_x - random.uniform(6, 14)
 
-        # Start position: Lower area (64% - 72%)
-        start_y = h * random.uniform(0.64, 0.72)
-        # End position: Upper screen (14% - 18%) - authoritatively crosses 50% snap threshold
-        end_y = h * random.uniform(0.14, 0.18)
+        # Start position: Lower area (68% - 76%)
+        start_y = h * random.uniform(0.68, 0.76)
+        # End position: Upper screen (14% - 20%) - authoritatively crosses 50% snap threshold
+        end_y = h * random.uniform(0.14, 0.20)
 
-        # Execute swift native drag across screen distance
-        success = self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur)
+        fling_velocity = velocity or random.uniform(2800.0, 3500.0)
+
+        # Execute native press & drag with fling velocity and ZERO hold duration
+        success = self.client.press_and_drag_with_velocity(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            velocity=fling_velocity,
+            press_duration=0.0,
+            hold_duration=0.0,
+        )
         if not success:
-            return self.client.swipe(direction="up", x=start_x, y=start_y)
+            return self.client.swipe(direction="up", x=start_x, y=start_y, velocity=fling_velocity)
         return True
 
-    def swipe_previous_video(self) -> bool:
+    def swipe_previous_video(self, velocity: Optional[float] = None) -> bool:
         """Performs an organic downward swipe to return to the previous video."""
         w, h = self.screen_width, self.screen_height
-        dur = random.randint(180, 240) / 1000.0
-
         hand = self.handedness.lower()
         if hand == "left":
             start_x = w * random.uniform(0.24, 0.32)
-            end_x = start_x - random.uniform(8, 16)
+            end_x = start_x - random.uniform(6, 14)
         else:
-            start_x = w * random.uniform(0.70, 0.78)
-            end_x = start_x + random.uniform(8, 16)
+            start_x = w * random.uniform(0.68, 0.76)
+            end_x = start_x + random.uniform(6, 14)
 
         start_y = h * random.uniform(0.16, 0.22)
         end_y = h * random.uniform(0.70, 0.76)
+        fling_velocity = velocity or random.uniform(2800.0, 3500.0)
 
-        success = self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur)
+        success = self.client.press_and_drag_with_velocity(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            velocity=fling_velocity,
+            press_duration=0.0,
+            hold_duration=0.0,
+        )
         if not success:
-            return self.client.swipe(direction="down", x=start_x, y=start_y)
+            return self.client.swipe(direction="down", x=start_x, y=start_y, velocity=fling_velocity)
         return True
 
     def micro_flick(self) -> bool:
@@ -181,31 +195,40 @@ class BiometricGestureEngine:
     def tap_heart_icon(self) -> bool:
         """Taps the TikTok right-hand sidebar heart icon directly."""
         w, h = self.screen_width, self.screen_height
-        # Right action sidebar heart icon is typically at ~92% width, ~48-52% height
-        heart_x = w * random.uniform(0.89, 0.94)
-        heart_y = h * random.uniform(0.48, 0.53)
+        # Right action sidebar heart icon is centered around ~92.5% width, ~56.4% height
+        heart_x = w * random.uniform(0.905, 0.945)
+        heart_y = h * random.uniform(0.552, 0.575)
         return self.client.tap(heart_x, heart_y, dwell_ms=random.randint(45, 75))
 
     def tap_bookmark_icon(self) -> bool:
         """Taps the TikTok right-hand sidebar bookmark / favorite icon."""
         w, h = self.screen_width, self.screen_height
-        # Bookmark icon is typically below comments, around ~64-68% height
-        bm_x = w * random.uniform(0.89, 0.94)
-        bm_y = h * random.uniform(0.63, 0.68)
+        # Bookmark icon is below comments, centered around ~92.5% width, ~71.6% height
+        bm_x = w * random.uniform(0.905, 0.945)
+        bm_y = h * random.uniform(0.705, 0.725)
         return self.client.tap(bm_x, bm_y, dwell_ms=random.randint(45, 75))
 
     def tap_comments_icon(self) -> bool:
         """Taps the TikTok comment icon to open comment drawer."""
         w, h = self.screen_width, self.screen_height
-        # Comment icon is below heart, around ~55-59% height
-        comm_x = w * random.uniform(0.89, 0.94)
-        comm_y = h * random.uniform(0.55, 0.60)
+        # Comment icon is below heart, centered around ~92.5% width, ~63.9% height
+        comm_x = w * random.uniform(0.905, 0.945)
+        comm_y = h * random.uniform(0.628, 0.648)
         return self.client.tap(comm_x, comm_y, dwell_ms=random.randint(45, 75))
 
     def close_comments_drawer(self) -> bool:
-        """Closes the comment drawer by tapping top-right X or tapping top dimmed background."""
+        """Closes the comment drawer by tapping top dimmed video backdrop or top-right X button."""
         w, h = self.screen_width, self.screen_height
-        # Tap the top dimmed portion of the screen (around 15-22% height)
-        tap_x = w * random.uniform(0.45, 0.55)
-        tap_y = h * random.uniform(0.15, 0.22)
-        return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(50, 80))
+        if random.random() < 0.75:
+            # Tap top dimmed video area (0.40-0.60 w, 0.16-0.22 h) which universally dismisses
+            # the bottom sheet without touching any comments or keyboard inputs
+            tap_x = w * random.uniform(0.40, 0.60)
+            tap_y = h * random.uniform(0.16, 0.22)
+            return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(45, 75))
+        else:
+            # Tap top-right 'X' button of comment drawer header (~92-95% width, ~33.8-35.0% height)
+            tap_x = w * random.uniform(0.925, 0.945)
+            tap_y = h * random.uniform(0.338, 0.350)
+            return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(45, 75))
+
+

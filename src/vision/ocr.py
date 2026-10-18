@@ -81,6 +81,51 @@ class VisionOCR:
             logger.debug(f"Error during Vision OCR extraction: {e}")
             return ""
 
+    def extract_observations(self, image: Image.Image) -> List[Tuple[str, float, float, float, float]]:
+        """
+        Extracts recognized text elements with normalized bounding boxes:
+        Returns list of (text, center_x, center_y, width, height) with origin (0, 0) at top-left.
+        """
+        if not self._has_vision:
+            return []
+
+        try:
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            img_data = buf.getvalue()
+
+            data_provider = self._quartz.CGDataProviderCreateWithData(None, img_data, len(img_data), None)
+            cg_image = self._quartz.CGImageCreateWithPNGDataProvider(
+                data_provider, None, False, self._quartz.kCGRenderingIntentDefault
+            )
+            if not cg_image:
+                return []
+
+            request = self._vision.VNRecognizeTextRequest.alloc().init()
+            request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelAccurate)
+            request.setUsesLanguageCorrection_(True)
+
+            handler = self._vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
+            success, error = handler.performRequests_error_([request], None)
+            if not success or not request.results():
+                return []
+
+            observations: List[Tuple[str, float, float, float, float]] = []
+            for obs in request.results():
+                top = obs.topCandidates_(1)
+                if top and len(top) > 0:
+                    text = top[0].string().strip()
+                    bb = obs.boundingBox()
+                    top_y = 1.0 - (bb.origin.y + bb.size.height)
+                    cx = float(bb.origin.x + bb.size.width / 2.0)
+                    cy = float(top_y + bb.size.height / 2.0)
+                    observations.append((text, cx, cy, float(bb.size.width), float(bb.size.height)))
+
+            return observations
+        except Exception as e:
+            logger.debug(f"Error during Vision OCR extract_observations: {e}")
+            return []
+
     def extract_caption_and_tags(self, image: Image.Image) -> str:
         """
         Extracts the lower region of the TikTok screen where username,

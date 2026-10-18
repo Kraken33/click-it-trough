@@ -1,5 +1,5 @@
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from PIL import Image
 
 from .ocr import VisionOCR
@@ -46,6 +46,53 @@ class ScreenDetector:
         "update": [r"update tiktok", r"new version available"],
         "generic_modal": [r"not now", r"maybe later", r"dismiss"],
     }
+
+    # Indicators that TikTok app feed/UI is active
+    TIKTOK_PATTERNS = [
+        r"\bfor you\b",
+        r"\bfollowing\b",
+        r"\bfriends\b",
+        r"\bcommunity\b",
+        r"\blive\b",
+        r"для вас",
+        r"підписки",
+        r"подписки",
+        r"\btiktok\b",
+        r"\badd comment\b",
+        r"\bshare to\b",
+        r"\bhome\b",
+        r"\binbox\b",
+        r"\bprofile\b",
+    ]
+
+    # Indicators that iOS SpringBoard / Homescreen is active
+    HOMESCREEN_PATTERNS = [
+        r"app library",
+        r"suggestions",
+        r"recently added",
+        r"productivity",
+        r"utilities",
+        r"бібліотека програм",
+        r"библиотека приложений",
+        r"соцсети",
+        r"соціальні",
+        r"недавно добавленные",
+        r"нещодавно додані",
+    ]
+
+    # Indicators that TikTok comments drawer is open
+    COMMENT_PATTERNS = [
+        r"\bcomments?\b",
+        r"add comment",
+        r"\breply\b",
+        r"replies",
+        r"коментар",
+        r"комментар",
+        r"відповісти",
+        r"ответить",
+        r"додати коментар",
+        r"оставьте комментарий",
+    ]
 
     def __init__(self, ocr: Optional[VisionOCR] = None):
         self.ocr = ocr or VisionOCR()
@@ -104,3 +151,117 @@ class ScreenDetector:
             # "Ask App not to Track" is the bottom option
             return (int(width * 0.5), int(height * 0.58))
         return (int(width * 0.5), int(height * 0.65))
+
+    def is_tiktok_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether TikTok UI is currently active on screen.
+        Returns (is_open, list_of_matched_indicators).
+        """
+        text = self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.TIKTOK_PATTERNS if re.search(p, text)]
+        if not matched:
+            is_comm, comm_m = self.is_comment_section_open(screen_image)
+            if is_comm:
+                return True, comm_m
+        return len(matched) > 0, matched
+
+    def is_homescreen_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether iOS SpringBoard / Homescreen is currently active.
+        Returns (is_homescreen, list_of_matched_indicators).
+        """
+        text = self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.HOMESCREEN_PATTERNS if re.search(p, text)]
+        return len(matched) > 0, matched
+
+    def is_comment_section_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether the TikTok comment drawer/sheet is open.
+        Returns (is_open, list_of_matched_indicators).
+        """
+        text = self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.COMMENT_PATTERNS if re.search(p, text)]
+        return len(matched) > 0, matched
+
+    def extract_likes_and_signature(self, screen_image: Image.Image) -> Tuple[Optional[str], str]:
+        """
+        Extracts the likes count (below the heart icon in the right action sidebar)
+        and content signature (body text/captions) from a TikTok video screen.
+        Returns (likes_count_str, content_signature_str).
+        """
+        obs = self.ocr.extract_observations(screen_image)
+        if not obs:
+            return None, ""
+
+        like_candidates = []
+        for text, cx, cy, w, h in obs:
+            if cx > 0.82 and 0.52 <= cy <= 0.65:
+                cleaned = text.replace(" ", "").upper()
+                if re.match(r"^\d+([.,]\d+)?[KMB]?$", cleaned):
+                    like_candidates.append((cy, cleaned))
+
+        like_count = None
+        if like_candidates:
+            like_candidates.sort(key=lambda item: abs(item[0] - 0.595))
+            like_count = like_candidates[0][1]
+
+        body_texts = [
+            text for text, cx, cy, w, h in obs
+            if 0.12 <= cy <= 0.90 and cx < 0.85 and len(text) > 2
+        ]
+        content_sig = " ".join(body_texts[:5]).strip()
+        return like_count, content_sig
+
+    def did_video_change(
+        self,
+        before_image: Image.Image,
+        after_image: Image.Image,
+        before_likes: Optional[str] = None,
+        before_sig: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Verifies whether the video on screen changed after a swipe gesture.
+        Uses the likes amount as the primary verification:
+        - If likes changed -> Video changed.
+        - If likes are identical -> Same video.
+        - If likes could not be extracted on one or both -> Falls back to content signature comparison.
+        Returns (has_changed, reason_description).
+        """
+        if before_likes is None or before_sig is None:
+            b_likes, b_sig = self.extract_likes_and_signature(before_image)
+            before_likes = before_likes or b_likes
+            before_sig = before_sig or b_sig
+
+        after_likes, after_sig = self.extract_likes_and_signature(after_image)
+
+        # 1. Primary check: Likes amount
+        if before_likes is not None and after_likes is not None:
+            if before_likes != after_likes:
+                return True, f"Likes changed: {before_likes} -> {after_likes}"
+            else:
+                if before_sig and after_sig and before_sig == after_sig:
+                    return False, f"Likes unchanged ({before_likes}) and identical content"
+                elif not before_sig and not after_sig:
+                    return False, f"Likes unchanged ({before_likes})"
+                if before_sig and after_sig:
+                    from difflib import SequenceMatcher
+                    ratio = SequenceMatcher(None, before_sig.lower(), after_sig.lower()).ratio()
+                    if ratio > 0.60:
+                        return False, f"Likes unchanged ({before_likes}) and content match {ratio:.0%}"
+                    else:
+                        return True, f"Content changed despite same like count ({before_likes})"
+
+        # 2. Fallback check: Content signature if likes count was obscured
+        if before_sig and after_sig:
+            from difflib import SequenceMatcher
+            ratio = SequenceMatcher(None, before_sig.lower(), after_sig.lower()).ratio()
+            if ratio < 0.45:
+                return True, f"Content changed ({ratio:.0%} match)"
+            else:
+                return False, f"Content unchanged ({ratio:.0%} match)"
+
+        if (before_likes is None) != (after_likes is None):
+            return True, f"Likes indicator changed ({before_likes} vs {after_likes})"
+
+        return False, "Could not detect distinct video markers"
+

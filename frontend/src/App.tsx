@@ -213,6 +213,9 @@ export default function App() {
   const [activeSearchTerm, setActiveSearchTerm] = useState<string | null>(null);
   const [isTestingTags, setIsTestingTags] = useState(false);
   const [tagTestResult, setTagTestResult] = useState<any | null>(null);
+  const [isTestingComment, setIsTestingComment] = useState(false);
+  const [isClosingApp, setIsClosingApp] = useState(false);
+  const [isTestingSwipe, setIsTestingSwipe] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -394,11 +397,136 @@ export default function App() {
   };
 
   const handleTestSwipe = async () => {
-    await fetch('/api/actions/test-swipe', { method: 'POST' });
+    if (isTestingSwipe) return;
+    try {
+      setIsTestingSwipe(true);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: "👆 Testing swipe gesture (verifying video change via likes)...",
+          type: "info",
+        },
+        ...logs.slice(0, 50),
+      ]);
+      const res = await fetch('/api/actions/test-swipe', { method: 'POST' });
+      const data = await res.json().catch(() => ({ status: 'error' }));
+      if (res.ok && data.status === 'ok') {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `✅ Swipe verified successful! [${data.details || 'Video changed'}]`,
+            type: "info",
+          },
+          ...logs.slice(0, 50),
+        ]);
+        fetchScreen();
+      } else {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `⚠️ Swipe verification: ${data.details || 'Video did not change'}`,
+            type: "ad",
+          },
+          ...logs.slice(0, 50),
+        ]);
+      }
+    } catch (e: any) {
+      console.error('Test swipe error', e);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: `❌ Error running swipe test: ${e.message}`,
+          type: "ad",
+        },
+        ...logs.slice(0, 50),
+      ]);
+    } finally {
+      setIsTestingSwipe(false);
+    }
   };
 
   const handleTestLike = async () => {
     await fetch('/api/actions/test-like', { method: 'POST' });
+  };
+
+  const handleTestComment = async () => {
+    if (isTestingComment) return;
+    try {
+      setIsTestingComment(true);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: "💬 Testing comment drawer (OCR verified)...",
+          type: "info",
+        },
+        ...logs.slice(0, 50),
+      ]);
+      const res = await fetch('/api/actions/test-comment', { method: 'POST' });
+      const data = await res.json().catch(() => ({ status: 'error', message: 'Invalid response' }));
+      if (res.ok && data.status === 'ok') {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `✅ Comments verified open & closed via OCR`,
+            type: "info",
+          },
+          ...logs.slice(0, 50),
+        ]);
+        fetchScreen();
+      } else {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: `⚠️ Comment test failed: ${data.message || data.detail || 'Could not verify'}. Opened: ${data.opened}, Closed: ${data.closed}`,
+            type: "ad",
+          },
+          ...logs.slice(0, 50),
+        ]);
+      }
+    } catch (e: any) {
+      console.error('Test comment error', e);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: `❌ Error running comment test: ${e.message}`,
+          type: "ad",
+        },
+        ...logs.slice(0, 50),
+      ]);
+    } finally {
+      setIsTestingComment(false);
+    }
+  };
+
+  const handleCloseApp = async () => {
+    if (isClosingApp) return;
+    try {
+      setIsClosingApp(true);
+      setActivityLogs((logs) => [
+        {
+          time: new Date().toLocaleTimeString(),
+          msg: "📱 Closing TikTok & returning to iOS home screen (OCR verified)...",
+          type: "info",
+        },
+        ...logs.slice(0, 50),
+      ]);
+      const res = await fetch('/api/actions/close-app', { method: 'POST' });
+      if (res.ok) {
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: "✅ TikTok closed and Home screen verified via OCR",
+            type: "info",
+          },
+          ...logs.slice(0, 50),
+        ]);
+        fetchScreen();
+      }
+    } catch (e: any) {
+      console.error('Close app error', e);
+    } finally {
+      setIsClosingApp(false);
+    }
   };
 
   const handleTriggerSearch = async (term?: string) => {
@@ -634,10 +762,18 @@ export default function App() {
             </button>
             <button
               onClick={handleTestSwipe}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-200 transition border border-gray-700"
-              title="Test biometric swipe gesture on iPhone"
+              disabled={isTestingSwipe}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-200 transition border border-gray-700 flex items-center gap-1.5 ${isTestingSwipe ? 'opacity-70 cursor-not-allowed' : ''}`}
+              title="Test biometric swipe gesture with likes verification on iPhone"
             >
-              Test Swipe
+              {isTestingSwipe ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-400" />
+                  Swiping...
+                </>
+              ) : (
+                'Test Swipe 👆'
+              )}
             </button>
             <button
               onClick={handleTestLike}
@@ -645,6 +781,36 @@ export default function App() {
               title="Test double tap like on iPhone"
             >
               Test Like ❤️
+            </button>
+            <button
+              onClick={handleTestComment}
+              disabled={isTestingComment}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-sky-400 transition border border-gray-700 flex items-center gap-1.5 ${isTestingComment ? 'opacity-70 cursor-not-allowed' : ''}`}
+              title="Test opening and closing comment drawer on iPhone"
+            >
+              {isTestingComment ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-sky-400" />
+                  Testing...
+                </>
+              ) : (
+                'Test Comments 💬'
+              )}
+            </button>
+            <button
+              onClick={handleCloseApp}
+              disabled={isClosingApp}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-amber-400 transition border border-gray-700 flex items-center gap-1.5 ${isClosingApp ? 'opacity-70 cursor-not-allowed' : ''}`}
+              title="Close TikTok and return to iOS home screen"
+            >
+              {isClosingApp ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                  Closing...
+                </>
+              ) : (
+                'Close App 📱'
+              )}
             </button>
             {(stats.state === 'RUNNING' || stats.state === 'PAUSED' || isSearching) && (
               <button

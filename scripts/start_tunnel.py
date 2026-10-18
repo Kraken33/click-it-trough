@@ -102,13 +102,47 @@ async def handle_connection(client_reader: asyncio.StreamReader, client_writer: 
     )
 
 
+def free_port(port: int):
+    """If port is held by an older start_tunnel.py process, terminate it gracefully."""
+    import time
+    try:
+        res = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
+        pids = [p.strip() for p in res.stdout.split() if p.strip()]
+        current_pid = str(os.getpid())
+        for pid in pids:
+            if pid == current_pid:
+                continue
+            cmd_check = subprocess.run(["ps", "-p", pid, "-o", "command="], capture_output=True, text=True)
+            if "start_tunnel" in cmd_check.stdout:
+                print(f"🔄 Releasing port {port} from previous tunnel instance (PID {pid})...")
+                try:
+                    os.kill(int(pid), 15)  # SIGTERM
+                except Exception:
+                    pass
+        if pids:
+            time.sleep(0.5)
+    except Exception:
+        pass
+
+
 async def run_forwarder(local_port: int, target_ip: str, target_port: int):
-    server = await asyncio.start_server(
-        lambda r, w: handle_connection(r, w, target_ip, target_port),
-        "127.0.0.1",
-        local_port,
-        reuse_address=True,
-    )
+    try:
+        server = await asyncio.start_server(
+            lambda r, w: handle_connection(r, w, target_ip, target_port),
+            "127.0.0.1",
+            local_port,
+            reuse_address=True,
+        )
+    except OSError as e:
+        if e.errno == 48:
+            print(f"⚠️ Port {local_port} is already in use by another process.")
+            res = subprocess.run(["lsof", "-i", f":{local_port}"], capture_output=True, text=True)
+            if res.stdout:
+                print(res.stdout.strip())
+            print(f"💡 The tunnel is already active! Check with: curl http://127.0.0.1:{local_port}/status")
+            return
+        raise
+
     print(f"✅ Tunnel active! Listening on http://127.0.0.1:{local_port} -> [{target_ip}]:{target_port}")
     print("Press Ctrl+C to stop the tunnel.")
     async with server:
@@ -123,6 +157,7 @@ def main():
         except ValueError:
             pass
 
+    free_port(local_port)
     print(f"🔍 Detecting connected iOS devices for WDA tunnel on port {local_port}...")
 
     # 1. Try iOS 17+ CoreDevice tunnel

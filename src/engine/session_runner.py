@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..bridge.device_manager import DeviceManager
@@ -157,12 +157,187 @@ class SessionRunner:
         self.stats.state = SessionState.RUNNING
         self._broadcast_status("Resuming session...")
 
+    def ensure_app_open(self, max_retries: int = 4) -> bool:
+        """
+        Launches TikTok and uses OCR to verify that TikTok-specific UI text
+        (e.g. 'For You', 'Following', 'LIVE', navigation bar) is present on screen.
+        Retries launch if not verified.
+        """
+        bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
+        for attempt in range(1, max_retries + 1):
+            if self._stop_event.is_set():
+                return False
+            self._broadcast_status(f"Opening TikTok (attempt {attempt}/{max_retries})...")
+            try:
+                self.wda.launch_app(bundle_id)
+            except Exception as e:
+                logger.debug(f"Error launching app: {e}")
+            time.sleep(2.0)
+
+            # OCR verification
+            screen = self.device_manager.get_screen()
+            if screen:
+                is_open, markers = self.detector.is_tiktok_open(screen)
+                if is_open:
+                    self._broadcast_status(f"TikTok verified open via OCR [{', '.join(markers[:3])}]")
+                    logger.info(f"TikTok launch verified via OCR: {markers}")
+                    return True
+                else:
+                    logger.warning(f"TikTok not detected on screen via OCR on attempt {attempt}")
+            time.sleep(1.0)
+
+        self._broadcast_status("TikTok launch could not be confirmed via OCR.")
+        return False
+
+    def close_app(self, max_retries: int = 3) -> bool:
+        """
+        Terminates TikTok and uses OCR to verify that the device is on the iOS home screen
+        (e.g. 'App Library', 'Suggestions', folder titles) and TikTok is no longer visible.
+        """
+        if not self.config.get("device", {}).get("close_app_on_finish", True):
+            return True
+
+        bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
+        for attempt in range(1, max_retries + 1):
+            self._broadcast_status(f"Closing TikTok & returning home (attempt {attempt}/{max_retries})...")
+            try:
+                self.wda.terminate_app(bundle_id)
+            except Exception as e:
+                logger.debug(f"Error terminating app {bundle_id}: {e}")
+            try:
+                self.wda.homescreen()
+            except Exception as e:
+                logger.debug(f"Error navigating to homescreen: {e}")
+            time.sleep(1.2)
+
+            # OCR verification
+            screen = self.device_manager.get_screen()
+            if screen:
+                is_home, home_markers = self.detector.is_homescreen_open(screen)
+                is_tiktok, _ = self.detector.is_tiktok_open(screen)
+                if is_home or not is_tiktok:
+                    label = ', '.join(home_markers[:3]) if home_markers else 'TikTok closed'
+                    self._broadcast_status(f"Home screen verified via OCR [{label}]")
+                    logger.info(f"App termination verified via OCR. Homescreen markers: {home_markers}")
+                    return True
+                else:
+                    logger.warning(f"TikTok still detected on screen via OCR on attempt {attempt}")
+            time.sleep(0.8)
+
+        self._broadcast_status("App close attempted.")
+        return False
+
+    def open_comments_verified(self, max_retries: int = 3) -> bool:
+        """
+        Taps comment icon and uses OCR to verify that the comment drawer/sheet
+        is actually open on screen (e.g. 'comments', 'Add comment', 'Reply').
+        If not verified, retries the tap.
+        """
+        for attempt in range(1, max_retries + 1):
+            if self._stop_event.is_set():
+                return False
+            self._broadcast_status(f"Opening comment section 💬 (attempt {attempt}/{max_retries})...")
+            self.gesture.tap_comments_icon()
+            time.sleep(1.8)
+
+            screen = self.device_manager.get_screen()
+            if screen:
+                is_open, markers = self.detector.is_comment_section_open(screen)
+                if is_open:
+                    self._broadcast_status(f"Comment drawer verified open via OCR [{', '.join(markers[:2])}]")
+                    logger.info(f"Comment section opened successfully, OCR verified: {markers}")
+                    return True
+                else:
+                    logger.warning(f"Comment drawer not detected on screen via OCR on attempt {attempt}")
+            time.sleep(0.5)
+
+        self._broadcast_status("Could not verify comment drawer via OCR.")
+        return False
+
+    def close_comments_verified(self, max_retries: int = 3) -> bool:
+        """
+        Closes the comment drawer and uses OCR to verify that the comment drawer/sheet
+        is no longer present on screen and the video feed is active.
+        """
+        for attempt in range(1, max_retries + 1):
+            self._broadcast_status(f"Closing comment section (attempt {attempt}/{max_retries})...")
+            self.gesture.close_comments_drawer()
+            time.sleep(1.2)
+
+            screen = self.device_manager.get_screen()
+            if screen:
+                is_open, markers = self.detector.is_comment_section_open(screen)
+                if not is_open:
+                    self._broadcast_status("Comment drawer verified closed via OCR.")
+                    logger.info("Comment section closed successfully, verified via OCR.")
+                    return True
+                else:
+                    logger.warning(f"Comment drawer still detected on screen via OCR [{', '.join(markers)}], retrying close...")
+                    # Fallback dismissal tap
+                    w, h = self.gesture.screen_width, self.gesture.screen_height
+                    if attempt % 2 == 1:
+                        self.wda.tap(w * 0.5, h * 0.15)
+                    else:
+                        self.wda.tap(w * 0.935, h * 0.33)
+            time.sleep(0.5)
+
+        self._broadcast_status("Comment drawer close attempted.")
+        return False
+
+    def swipe_next_video_verified(self, max_retries: int = 3) -> Tuple[bool, str]:
+        """
+        Executes swipe to next video and verifies that the video changed
+        by checking that the likes count (and content) changed via Vision OCR.
+        If the video did not change (likes stayed identical), it retries the swipe.
+        Returns (has_changed, reason_description).
+        """
+        before_img = self.device_manager.get_screen()
+        before_likes, before_sig = (None, "")
+        if before_img:
+            before_likes, before_sig = self.detector.extract_likes_and_signature(before_img)
+
+        last_reason = "No transition detected"
+        for attempt in range(1, max_retries + 1):
+            if self._stop_event.is_set():
+                return False, "Stopped"
+
+            self._broadcast_status(f"Swiping to next video 👆 (attempt {attempt}/{max_retries})...")
+            fling_v = 3000.0 if attempt == 1 else (3300.0 + (attempt - 2) * 200.0)
+            self.gesture.swipe_next_video(velocity=fling_v)
+
+            # Wait natural video stabilization time
+            time.sleep(1.0)
+
+            after_img = self.device_manager.get_screen()
+            if after_img:
+                changed, reason = self.detector.did_video_change(
+                    before_img or after_img,
+                    after_img,
+                    before_likes=before_likes,
+                    before_sig=before_sig,
+                )
+                last_reason = reason
+                if changed:
+                    self._broadcast_status(f"Video changed [{reason}]")
+                    logger.info(f"Swipe verified: {reason}")
+                    return True, reason
+                else:
+                    logger.warning(
+                        f"Video did not change after swipe [{reason}], retrying ({attempt}/{max_retries})..."
+                    )
+                    self._broadcast_status(f"Video unchanged ({reason}), retrying...")
+                    time.sleep(0.4)
+
+        return False, last_reason
+
     def stop(self):
         """Signals the session to terminate gracefully."""
         self._stop_event.set()
         self._pause_event.clear()
         self.stats.state = SessionState.STOPPED
         self._broadcast_status("Session stopped by user")
+        if not self._thread or not self._thread.is_alive():
+            self.close_app()
 
     def skip_video(self):
         """Interrupts current video dwell and triggers immediate swipe up."""
@@ -280,190 +455,197 @@ class SessionRunner:
                 self._broadcast_status(f"Error connecting to iPhone: {e2}")
                 return
 
-        # 2. Check if TikTok is open (do not force launch to avoid XCTest process hooking)
-        time.sleep(0.5)
+        # 2. Launch / ensure TikTok is active with OCR verification
+        self.ensure_app_open()
 
         start_ts = time.time()
         max_duration_sec = (duration_minutes * 60) if duration_minutes else None
         probs = self.config.get("probabilities", {})
         safety_cfg = self.config.get("safety", {})
 
-        # 3. Optional Search Seeding if enabled in config
-        niche_cfg = self.config.get("niche", {})
-        if niche_cfg.get("seed_search_enabled", False) and self.trainer.seed_terms and not self._stop_event.is_set():
-            seed_term = random.choice(self.trainer.seed_terms)
-            seed_min = int(niche_cfg.get("seed_videos_min", 2))
-            seed_max = int(niche_cfg.get("seed_videos_max", niche_cfg.get("seed_videos_per_term", 4)))
-            seed_count = random.randint(min(seed_min, seed_max), max(seed_min, seed_max))
-            self.trigger_search_seeding(term=seed_term, videos_to_watch=seed_count)
+        try:
+            # 3. Optional Search Seeding if enabled in config
+            niche_cfg = self.config.get("niche", {})
+            if niche_cfg.get("seed_search_enabled", False) and self.trainer.seed_terms and not self._stop_event.is_set():
+                seed_term = random.choice(self.trainer.seed_terms)
+                seed_min = int(niche_cfg.get("seed_videos_min", 2))
+                seed_max = int(niche_cfg.get("seed_videos_max", niche_cfg.get("seed_videos_per_term", 4)))
+                seed_count = random.randint(min(seed_min, seed_max), max(seed_min, seed_max))
+                self.trigger_search_seeding(term=seed_term, videos_to_watch=seed_count)
 
-        # Main Browsing Loop
-        while not self._stop_event.is_set():
-            # Check pause state
-            while self._pause_event.is_set():
-                if self._stop_event.is_set():
-                    break
-                time.sleep(0.5)
-
-            # Check duration limit
-            elapsed = int(time.time() - start_ts)
-            self.stats.duration_seconds = elapsed
-            if max_duration_sec and elapsed >= max_duration_sec:
-                self._broadcast_status("Session reached target duration.")
-                break
-
-            # Check daily safety caps
-            if self.stats.videos_watched >= safety_cfg.get("max_daily_videos", 150):
-                self._broadcast_status("Daily video safety limit reached.")
-                break
-
-            # Vision & Niche Detection (enabled by default)
-            enable_ocr = self.config.get("vision", {}).get("enabled", True)
-            is_niche = False
-            is_ad = False
-            matched_kws = []
-            if enable_ocr:
-                try:
-                    # Allow video frame & caption to render after swipe
+            # Main Browsing Loop
+            while not self._stop_event.is_set():
+                # Check pause state
+                while self._pause_event.is_set():
+                    if self._stop_event.is_set():
+                        break
                     time.sleep(0.5)
-                    screen_img = self.device_manager.get_screen()
-                    if screen_img:
-                        caption, full_text = self.ocr.extract_full_content(screen_img)
-                        is_ad = self.detector.is_sponsored(caption) or self.detector.is_sponsored(full_text)
-                        
-                        # Evaluate relevance: check caption first, then full screen text (titles/stickers)
-                        _, matched_kws = self.trainer.evaluate_relevance(caption)
-                        if not matched_kws and full_text:
-                            _, matched_kws = self.trainer.evaluate_relevance(full_text)
 
-                        is_niche = len(matched_kws) > 0
-                        self.stats.current_caption = caption[:100] if caption else full_text[:100]
-                        self.stats.current_matched_keywords = matched_kws
-
-                        if is_niche:
-                            logger.info(f"Niche matched: {matched_kws}")
-                            self._broadcast_status(f"🎯 Niche match: [{', '.join(matched_kws)}]")
-                except Exception as e:
-                    logger.debug(f"OCR error during loop: {e}")
-
-            # Calculate Dwell Time (natural human curve: e.g. 6 to 18 seconds)
-            dwell = self._sample_dwell_time(is_niche, is_ad)
-            dwell_start = time.time()
-
-            action_desc = f"Watching Niche Video [{', '.join(matched_kws)}]" if is_niche else "Watching FYP Video"
-            while time.time() - dwell_start < dwell:
-                if self._stop_event.is_set():
+                # Check duration limit
+                elapsed = int(time.time() - start_ts)
+                self.stats.duration_seconds = elapsed
+                if max_duration_sec and elapsed >= max_duration_sec:
+                    self._broadcast_status("Session reached target duration.")
                     break
-                if self._skip_flag.is_set():
-                    self._skip_flag.clear()
+
+                # Check daily safety caps
+                if self.stats.videos_watched >= safety_cfg.get("max_daily_videos", 150):
+                    self._broadcast_status("Daily video safety limit reached.")
                     break
-                remaining = max(0.0, dwell - (time.time() - dwell_start))
-                self.stats.current_dwell_remaining = round(remaining, 1)
-                self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
-                time.sleep(0.3)
 
-            self.stats.videos_watched += 1
-            if is_niche:
-                self.stats.niche_matched_count += 1
-            if is_ad:
-                self.stats.ads_skipped += 1
+                # Vision & Niche Detection (enabled by default)
+                enable_ocr = self.config.get("vision", {}).get("enabled", True)
+                is_niche = False
+                is_ad = False
+                matched_kws = []
+                if enable_ocr:
+                    try:
+                        # Allow video frame & caption to render after swipe
+                        time.sleep(0.5)
+                        screen_img = self.device_manager.get_screen()
+                        if screen_img:
+                            caption, full_text = self.ocr.extract_full_content(screen_img)
+                            is_ad = self.detector.is_sponsored(caption) or self.detector.is_sponsored(full_text)
+                            
+                            # Evaluate relevance: check caption first, then full screen text (titles/stickers)
+                            _, matched_kws = self.trainer.evaluate_relevance(caption)
+                            if not matched_kws and full_text:
+                                _, matched_kws = self.trainer.evaluate_relevance(full_text)
 
-            # Step 7: Natural Interactions (Likes, Comments, Bookmarks) if not an Ad
-            if not is_ad and not self._stop_event.is_set():
-                # Like probability sampled from configured range
+                            is_niche = len(matched_kws) > 0
+                            self.stats.current_caption = caption[:100] if caption else full_text[:100]
+                            self.stats.current_matched_keywords = matched_kws
+
+                            if is_niche:
+                                logger.info(f"Niche matched: {matched_kws}")
+                                self._broadcast_status(f"🎯 Niche match: [{', '.join(matched_kws)}]")
+                    except Exception as e:
+                        logger.debug(f"OCR error during loop: {e}")
+
+                # Calculate Dwell Time (natural human curve: e.g. 6 to 18 seconds)
+                dwell = self._sample_dwell_time(is_niche, is_ad)
+                dwell_start = time.time()
+
+                action_desc = f"Watching Niche Video [{', '.join(matched_kws)}]" if is_niche else "Watching FYP Video"
+                while time.time() - dwell_start < dwell:
+                    if self._stop_event.is_set():
+                        break
+                    if self._skip_flag.is_set():
+                        self._skip_flag.clear()
+                        break
+                    remaining = max(0.0, dwell - (time.time() - dwell_start))
+                    self.stats.current_dwell_remaining = round(remaining, 1)
+                    self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
+                    time.sleep(0.3)
+
+                self.stats.videos_watched += 1
                 if is_niche:
-                    like_min = float(probs.get("like_niche_min", probs.get("like_niche", 0.35)))
-                    like_max = float(probs.get("like_niche_max", probs.get("like_niche", 0.55)))
-                else:
-                    like_min = float(probs.get("like_base_min", probs.get("like_base", 0.05)))
-                    like_max = float(probs.get("like_base_max", probs.get("like_base", 0.15)))
-                like_threshold = random.uniform(min(like_min, like_max), max(like_min, like_max))
+                    self.stats.niche_matched_count += 1
+                if is_ad:
+                    self.stats.ads_skipped += 1
 
-                if random.random() < like_threshold and self.stats.likes_count < safety_cfg.get("max_daily_likes", 35):
-                    # Randomized double-tap vs icon ratio
-                    dt_min = float(probs.get("double_tap_ratio_min", probs.get("double_tap_ratio", 0.70)))
-                    dt_max = float(probs.get("double_tap_ratio_max", probs.get("double_tap_ratio", 0.85)))
-                    dt_threshold = random.uniform(min(dt_min, dt_max), max(dt_min, dt_max))
-
-                    if random.random() < dt_threshold:
-                        self._broadcast_status("Double-tapping video (Like ❤️)")
-                        self.gesture.double_tap_like()
+                # Step 7: Natural Interactions (Likes, Comments, Bookmarks) if not an Ad
+                if not is_ad and not self._stop_event.is_set():
+                    # Like probability sampled from configured range
+                    if is_niche:
+                        like_min = float(probs.get("like_niche_min", probs.get("like_niche", 0.35)))
+                        like_max = float(probs.get("like_niche_max", probs.get("like_niche", 0.55)))
                     else:
-                        self._broadcast_status("Tapping heart icon (Like ❤️)")
-                        self.gesture.tap_heart_icon()
-                    self.stats.likes_count += 1
+                        like_min = float(probs.get("like_base_min", probs.get("like_base", 0.05)))
+                        like_max = float(probs.get("like_base_max", probs.get("like_base", 0.15)))
+                    like_threshold = random.uniform(min(like_min, like_max), max(like_min, like_max))
 
-                    pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
-                    pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
-                    time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
+                    if random.random() < like_threshold and self.stats.likes_count < safety_cfg.get("max_daily_likes", 35):
+                        # Randomized double-tap vs icon ratio
+                        dt_min = float(probs.get("double_tap_ratio_min", probs.get("double_tap_ratio", 0.70)))
+                        dt_max = float(probs.get("double_tap_ratio_max", probs.get("double_tap_ratio", 0.85)))
+                        dt_threshold = random.uniform(min(dt_min, dt_max), max(dt_min, dt_max))
 
-                # Bookmark / Favorite probability sampled from configured range
-                if is_niche:
-                    fav_min = float(probs.get("favorite_niche_min", probs.get("favorite_niche", 0.12)))
-                    fav_max = float(probs.get("favorite_niche_max", probs.get("favorite_niche", 0.22)))
-                else:
-                    fav_min = float(probs.get("favorite_base_min", probs.get("favorite_base", 0.01)))
-                    fav_max = float(probs.get("favorite_base_max", probs.get("favorite_base", 0.04)))
-                fav_threshold = random.uniform(min(fav_min, fav_max), max(fav_min, fav_max))
+                        if random.random() < dt_threshold:
+                            self._broadcast_status("Double-tapping video (Like ❤️)")
+                            self.gesture.double_tap_like()
+                        else:
+                            self._broadcast_status("Tapping heart icon (Like ❤️)")
+                            self.gesture.tap_heart_icon()
+                        self.stats.likes_count += 1
 
-                if random.random() < fav_threshold and self.stats.favorites_count < safety_cfg.get("max_daily_favorites", 15):
-                    self._broadcast_status("Bookmarking video (Favorite ⭐)")
-                    self.gesture.tap_bookmark_icon()
-                    self.stats.favorites_count += 1
-                    pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
-                    pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
-                    time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
+                        pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
+                        pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
+                        time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
 
-                # View Comment Drawer probability sampled from configured range
-                if is_niche:
-                    comm_min = float(probs.get("comment_drawer_niche_min", probs.get("comment_drawer_view_niche", 0.06)))
-                    comm_max = float(probs.get("comment_drawer_niche_max", probs.get("comment_drawer_view_niche", 0.15)))
-                else:
-                    comm_min = float(probs.get("comment_drawer_base_min", probs.get("comment_drawer_view_base", 0.01)))
-                    comm_max = float(probs.get("comment_drawer_base_max", probs.get("comment_drawer_view_base", 0.03)))
-                comm_threshold = random.uniform(min(comm_min, comm_max), max(comm_min, comm_max))
+                    # Bookmark / Favorite probability sampled from configured range
+                    if is_niche:
+                        fav_min = float(probs.get("favorite_niche_min", probs.get("favorite_niche", 0.12)))
+                        fav_max = float(probs.get("favorite_niche_max", probs.get("favorite_niche", 0.22)))
+                    else:
+                        fav_min = float(probs.get("favorite_base_min", probs.get("favorite_base", 0.01)))
+                        fav_max = float(probs.get("favorite_base_max", probs.get("favorite_base", 0.04)))
+                    fav_threshold = random.uniform(min(fav_min, fav_max), max(fav_min, fav_max))
 
-                if random.random() < comm_threshold:
-                    self._broadcast_status("Opening comment section 💬")
-                    self.gesture.tap_comments_icon()
-                    self.stats.comments_viewed += 1
-                    # Read comments with configured duration range
-                    comm_read_min = float(probs.get("comment_read_min_seconds", 3.0))
-                    comm_read_max = float(probs.get("comment_read_max_seconds", 6.5))
-                    read_time = random.uniform(min(comm_read_min, comm_read_max), max(comm_read_min, comm_read_max))
-                    time.sleep(read_time)
-                    self._broadcast_status("Closing comment section")
-                    self.gesture.close_comments_drawer()
-                    pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
-                    pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
-                    time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
+                    if random.random() < fav_threshold and self.stats.favorites_count < safety_cfg.get("max_daily_favorites", 15):
+                        self._broadcast_status("Bookmarking video (Favorite ⭐)")
+                        self.gesture.tap_bookmark_icon()
+                        self.stats.favorites_count += 1
+                        pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
+                        pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
+                        time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
 
-            # Step 8: Biometric Gesture to Next Video
-            # Occasional re-watch swipe back with range sampling
-            rewatch_min = float(probs.get("rewatch_swipe_back_min", probs.get("rewatch_swipe_back", 0.02)))
-            rewatch_max = float(probs.get("rewatch_swipe_back_max", probs.get("rewatch_swipe_back", 0.06)))
-            rewatch_prob = random.uniform(min(rewatch_min, rewatch_max), max(rewatch_min, rewatch_max))
-            if random.random() < rewatch_prob:
-                self._broadcast_status("Rewatching previous video (Swipe back ↩️)")
-                self.gesture.swipe_previous_video()
-                time.sleep(random.uniform(3.0, 7.0))
+                    # View Comment Drawer probability sampled from configured range
+                    if is_niche:
+                        comm_min = float(probs.get("comment_drawer_niche_min", probs.get("comment_drawer_view_niche", 0.06)))
+                        comm_max = float(probs.get("comment_drawer_niche_max", probs.get("comment_drawer_view_niche", 0.15)))
+                    else:
+                        comm_min = float(probs.get("comment_drawer_base_min", probs.get("comment_drawer_view_base", 0.01)))
+                        comm_max = float(probs.get("comment_drawer_base_max", probs.get("comment_drawer_view_base", 0.03)))
+                    comm_threshold = random.uniform(min(comm_min, comm_max), max(comm_min, comm_max))
 
-            # Occasional micro-flick with range sampling
-            flick_min = float(probs.get("micro_flick_min", probs.get("micro_flick", 0.01)))
-            flick_max = float(probs.get("micro_flick_max", probs.get("micro_flick", 0.05)))
-            flick_prob = random.uniform(min(flick_min, flick_max), max(flick_min, flick_max))
-            if random.random() < flick_prob:
-                self.gesture.micro_flick()
-                time.sleep(random.uniform(0.4, 0.8))
+                    if random.random() < comm_threshold:
+                        opened = self.open_comments_verified()
+                        if opened:
+                            self.stats.comments_viewed += 1
+                            # Read comments with configured duration range
+                            comm_read_min = float(probs.get("comment_read_min_seconds", 3.0))
+                            comm_read_max = float(probs.get("comment_read_max_seconds", 6.5))
+                            read_time = random.uniform(min(comm_read_min, comm_read_max), max(comm_read_min, comm_read_max))
+                            comm_start = time.time()
+                            while time.time() - comm_start < read_time:
+                                if self._stop_event.is_set():
+                                    break
+                                time.sleep(0.2)
+                            self.close_comments_verified()
+                            pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
+                            pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
+                            time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
+                        else:
+                            logger.info("Comment drawer could not be verified open via OCR, continuing loop.")
 
-            # Standard Biometric Swipe to Next Video
-            self._broadcast_status("Swiping to next video 👆")
-            self.gesture.swipe_next_video()
-            # Post-swipe natural stabilization pause with range sampling
-            post_swipe_min = float(probs.get("post_swipe_pause_min_sec", 0.8))
-            post_swipe_max = float(probs.get("post_swipe_pause_max_sec", 1.8))
-            time.sleep(random.uniform(min(post_swipe_min, post_swipe_max), max(post_swipe_min, post_swipe_max)))
+                # Step 8: Biometric Gesture to Next Video
+                # Occasional re-watch swipe back with range sampling
+                rewatch_min = float(probs.get("rewatch_swipe_back_min", probs.get("rewatch_swipe_back", 0.02)))
+                rewatch_max = float(probs.get("rewatch_swipe_back_max", probs.get("rewatch_swipe_back", 0.06)))
+                rewatch_prob = random.uniform(min(rewatch_min, rewatch_max), max(rewatch_min, rewatch_max))
+                if random.random() < rewatch_prob:
+                    self._broadcast_status("Rewatching previous video (Swipe back ↩️)")
+                    self.gesture.swipe_previous_video()
+                    time.sleep(random.uniform(3.0, 7.0))
 
-        self.stats.state = SessionState.STOPPED
-        self._broadcast_status("Session finished.")
-        logger.info("TikTok session loop terminated.")
+                # Occasional micro-flick with range sampling
+                flick_min = float(probs.get("micro_flick_min", probs.get("micro_flick", 0.01)))
+                flick_max = float(probs.get("micro_flick_max", probs.get("micro_flick", 0.05)))
+                flick_prob = random.uniform(min(flick_min, flick_max), max(flick_min, flick_max))
+                if random.random() < flick_prob:
+                    self.gesture.micro_flick()
+                    time.sleep(random.uniform(0.4, 0.8))
+
+                # Verified Biometric Swipe to Next Video (OCR checked via likes amount)
+                self.swipe_next_video_verified()
+                # Post-swipe natural stabilization pause with range sampling
+                post_swipe_min = float(probs.get("post_swipe_pause_min_sec", 0.8))
+                post_swipe_max = float(probs.get("post_swipe_pause_max_sec", 1.8))
+                time.sleep(random.uniform(min(post_swipe_min, post_swipe_max), max(post_swipe_min, post_swipe_max)))
+        finally:
+            self.stats.state = SessionState.STOPPED
+            self._broadcast_status("Session finished. Closing app...")
+            self.close_app()
+            self._broadcast_status("Session finished.")
+            logger.info("TikTok session loop terminated.")
