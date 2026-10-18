@@ -1,7 +1,7 @@
 import logging
 import random
 import time
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 from ..bridge.wda_client import WDAClient
 from ..physics.gesture import BiometricGestureEngine
 
@@ -44,65 +44,83 @@ class NicheTrainer:
         gesture: BiometricGestureEngine,
         term: str,
         videos_to_watch: int = 3,
+        on_progress: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """
         Executes a niche search on TikTok to prime the recommendation algorithm.
         1. Taps the search icon (top right).
-        2. Enters search query.
-        3. Taps search button.
-        4. Browses 2-3 search result videos with human-like dwell.
+        2. Enters search query and taps Search.
+        3. Taps first video tile in search results.
+        4. Browses 2-3 search result videos with human-like dwell and organic like.
         5. Returns back to the main FYP.
         """
         w, h = gesture.screen_width, gesture.screen_height
-        logger.info(f"Seeding niche with search term: '{term}'")
+
+        def notify(msg: str):
+            logger.info(msg)
+            if on_progress:
+                try:
+                    on_progress(msg)
+                except Exception:
+                    pass
 
         try:
-            # 1. Tap search icon (typically around 90% width, 7.5% height in FYP header)
-            search_icon_x = w * random.uniform(0.88, 0.93)
-            search_icon_y = h * random.uniform(0.065, 0.085)
+            notify(f"Opening TikTok Search for '{term}'...")
+            # 1. Tap search icon (top right: ~93% width, ~7.7% height)
+            search_icon_x = w * random.uniform(0.92, 0.94)
+            search_icon_y = h * random.uniform(0.073, 0.081)
             client.tap(search_icon_x, search_icon_y)
-            time.sleep(random.uniform(1.2, 1.8))
+            time.sleep(random.uniform(1.5, 2.0))
 
             # 2. Type search text
-            # Note: WDA provides keyboard typing via active element or session
-            session_id = client.ensure_session()
-            client._url(f"/session/{session_id}/wda/keys")
-            import requests
-            requests.post(
-                client._url(f"/session/{session_id}/wda/keys"),
-                json={"value": list(term) + ["\n"]},
-                timeout=5.0,
-            )
+            notify(f"Typing query: '{term}'...")
+            client.send_keys(term)
+            time.sleep(random.uniform(0.8, 1.2))
+
+            # Tap red 'Search' button in header (~91.5% width, ~8.2% height)
+            notify(f"Executing search for '{term}'...")
+            search_btn_x = w * random.uniform(0.90, 0.93)
+            search_btn_y = h * random.uniform(0.078, 0.086)
+            client.tap(search_btn_x, search_btn_y)
             time.sleep(random.uniform(2.5, 3.5))
 
-            # 3. Tap first video in search results (usually top grid item around 35% height)
-            client.tap(w * random.uniform(0.25, 0.45), h * random.uniform(0.32, 0.42))
-            time.sleep(random.uniform(1.5, 2.2))
+            # 3. Tap first video in search results (top-left tile ~25% width, ~30% height)
+            notify(f"Opening top video for '{term}'...")
+            client.tap(w * random.uniform(0.22, 0.30), h * random.uniform(0.28, 0.35))
+            time.sleep(random.uniform(2.0, 2.8))
 
-            # 4. Watch a few search result videos
+            # 4. Watch a few search result videos with human attention and likes
             for i in range(videos_to_watch):
-                dwell = random.uniform(8.0, 16.0)
-                logger.info(f"Watching seed video {i+1}/{videos_to_watch} for {dwell:.1f}s")
+                dwell = random.uniform(8.0, 15.0)
+                notify(f"Watching seed video {i+1}/{videos_to_watch} for {dwell:.1f}s...")
                 time.sleep(dwell)
 
-                # Like one of the seed videos organically
-                if i == 1:
+                # Like the first or second seed video to signal strong interest
+                if i == 0 or (videos_to_watch > 1 and i == 1):
+                    notify(f"Liking niche video ({term}) to train FYP algorithm...")
                     gesture.double_tap_like()
-                    time.sleep(1.0)
+                    time.sleep(random.uniform(1.0, 1.5))
 
-                gesture.swipe_next_video()
-                time.sleep(random.uniform(1.0, 1.8))
+                if i < videos_to_watch - 1:
+                    notify("Swiping to next video in search feed...")
+                    gesture.swipe_next_video()
+                    time.sleep(random.uniform(1.2, 2.0))
 
-            # 5. Return to FYP: Tap back arrow (top left, ~7% width, ~7.5% height) twice
-            back_x = w * random.uniform(0.05, 0.09)
-            back_y = h * random.uniform(0.065, 0.085)
-            client.tap(back_x, back_y)
-            time.sleep(random.uniform(1.0, 1.5))
-            client.tap(back_x, back_y)
-            time.sleep(random.uniform(1.0, 1.5))
+            # 5. Return to FYP: Tap back arrow (top left: ~6.5% width, ~8.2% height) 3 times
+            notify("Returning to main For You Page...")
+            back_x = w * random.uniform(0.055, 0.075)
+            back_y = h * random.uniform(0.075, 0.088)
+            for _ in range(3):
+                client.tap(back_x, back_y)
+                time.sleep(random.uniform(1.0, 1.4))
 
-            logger.info("Search seeding completed successfully. Returned to FYP.")
+            # Optional fallback tap on Home tab icon (bottom left ~10% width, ~95% height)
+            client.tap(w * 0.10, h * 0.95)
+            time.sleep(1.0)
+
+            notify(f"Search seeding for '{term}' completed! Recommendation vector primed.")
             return True
         except Exception as e:
             logger.warning(f"Search seeding encountered an issue: {e}")
+            notify(f"Search seeding error: {e}")
             return False

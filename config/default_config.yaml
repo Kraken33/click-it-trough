@@ -1,58 +1,93 @@
-# TikTok iPhone Automation & Account Warming Configuration
-
 device:
-  wda_url: "http://localhost:8100"
-  bundle_id: "com.zhiliaoapp.musically"  # Standard TikTok iOS app bundle identifier
+  wda_url: http://localhost:8100
+  bundle_id: com.zhiliaoapp.musically
   reconnect_interval_sec: 5
-  screen_width: 393                    # Points (will auto-detect from WDA)
-  screen_height: 852                   # Points (will auto-detect from WDA)
-
+  screen_width: 393
+  screen_height: 852
 niche:
-  seed_search_enabled: false
+  seed_search_enabled: true
   seed_terms:
-    - "tech innovation"
-    - "ai coding tools"
-    - "software engineering"
-    - "cool gadgets"
+  - kukirin
+  - ausom
+  - lonnyo
+  - vesc
+  - escooter
+  - electricscooter
+  - hyperscooter
+  - pevlifestyle
+  - escooterride
+  - scootertok
+  - fyp
+  - vescproject
+  - diypev
+  - diyescooter
+  - customescooter
+  - scootertuning
+  - kukiring3pro
+  - escootermod
+  - pevmods
+  - fastescooter
+  - speedrun
+  - toprun
+  - kukiring4
+  - ausomgallop
+  - escooterlife
+  - povride
+  - pevracing
+  - electricmobility
   target_keywords:
-    - "code"
-    - "developer"
-    - "software"
-    - "python"
-    - "ai"
-    - "tech"
-    - "programmer"
-    - "gadget"
-    - "engineering"
-    - "webdev"
-  seed_videos_per_term: 3
-
+  - kukirin
+  - ausom
+  - lonnyo
+  - vesc
+  - escooter
+  - electricscooter
+  - hyperscooter
+  - pevlifestyle
+  - escooterride
+  - scootertok
+  - fyp
+  - vescproject
+  - diypev
+  - diyescooter
+  - customescooter
+  - scootertuning
+  - kukiring3pro
+  - escootermod
+  - pevmods
+  - fastescooter
+  - speedrun
+  - toprun
+  - kukiring4
+  - ausomgallop
+  - escooterlife
+  - povride
+  - pevracing
+  - electricmobility
+  seed_videos_per_term: 5
 dwell_time:
   min_seconds: 3.5
-  max_seconds: 40.0
-  mean_seconds: 11.0
+  max_seconds: 40
+  mean_seconds: 11
   niche_match_multiplier: 2.2
   ad_skip_seconds: 1.2
   live_skip_seconds: 0.8
-
 probabilities:
-  like_base: 0.10                      # 10% on random FYP content
-  like_niche: 0.40                     # 40% when content matches target keywords
-  favorite_base: 0.03                  # 3% bookmark on general content
-  favorite_niche: 0.16                 # 16% bookmark on niche content
-  comment_drawer_view_base: 0.0        # Disabled to avoid stuck comment drawers
-  comment_drawer_view_niche: 0.0
-  rewatch_swipe_back: 0.0              # Disabled so feed always advances forward
-  micro_flick: 0.0                     # Disabled to prevent accidental incomplete scrolls
-  double_tap_ratio: 0.75               # 75% double-tap to like, 25% tap heart icon
-
+  like_base: 0.1
+  like_niche: 0.4
+  favorite_base: 0.03
+  favorite_niche: 0.16
+  comment_drawer_view_base: 0
+  comment_drawer_view_niche: 0.07
+  rewatch_swipe_back: 0
+  micro_flick: 0
+  double_tap_ratio: 0.75
 physics:
-  handedness: "right"                  # "right" or "left" thumb pivot
-  curve_deviation_px: 24.0             # Bézier arc peak curvature
-  jitter_intensity_px: 2.0             # Micro-wobble / tremor intensity
+  handedness: right
+  curve_deviation_px: 24
+  jitter_intensity_px: 2
   min_swipe_duration_ms: 280
   max_swipe_duration_ms: 440
-
 safety:
   max_daily_videos: 150
   max_daily_likes: 35
@@ -60,8 +95,7 @@ safety:
   auto_pause_on_captcha: true
   play_sound_on_alert: true
   macos_notification: true
-  screenshot_dir: "logs/captchas"
-
+  screenshot_dir: logs/captchas
 scheduler:
   enabled: true
   sessions_per_day: 3
@@ -69,6 +103,12 @@ scheduler:
   session_duration_max: 24
   start_jitter_minutes: 20
   windows:
-    morning: ["08:30", "10:15"]
-    afternoon: ["12:45", "14:30"]
-    evening: ["19:30", "22:15"]
+    morning:
+    - 08:30
+    - '10:15'
+    afternoon:
+    - '12:45'
+    - '14:30'
+    evening:
+    - '19:30'
+    - '22:15'

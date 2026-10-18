@@ -4,7 +4,8 @@ import io
 import json
 import logging
 import os
-from typing import Any, Dict, List
+import threading
+from typing import Any, Dict, List, Optional
 import yaml
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,20 @@ from ..engine.session_runner import SessionRunner
 logger = logging.getLogger(__name__)
 
 
+def deep_update(base: dict, update: dict) -> dict:
+    """Recursively updates nested dictionaries in base with values from update."""
+    for k, v in update.items():
+        if isinstance(v, dict) and k in base and isinstance(base[k], dict):
+            deep_update(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
 def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
     # Load configuration
-    with open(config_path, "r") as f:
+    abs_config_path = os.path.abspath(config_path)
+    with open(abs_config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     app = FastAPI(title="TikTok iOS Automation Suite", version="1.0.0")
@@ -56,6 +68,7 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
     scheduler = DailyRoutineScheduler(runner=runner, config=config)
 
     app.state.config = config
+    app.state.config_path = abs_config_path
     app.state.device_manager = device_manager
     app.state.runner = runner
     app.state.scheduler = scheduler
@@ -99,8 +112,25 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
 
     @app.post("/api/config")
     def update_config(payload: Dict[str, Any]):
-        app.state.config.update(payload)
+        deep_update(app.state.config, payload)
         runner.update_config(app.state.config)
+        scheduler.config = app.state.config.get("scheduler", {})
+        scheduler.enabled = scheduler.config.get("enabled", True)
+
+        # Persist updated configuration back to disk atomically
+        try:
+            cfg_path = app.state.config_path
+            dir_name = os.path.dirname(cfg_path)
+            os.makedirs(dir_name, exist_ok=True)
+            temp_path = f"{cfg_path}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(app.state.config, f, default_flow_style=False, sort_keys=False)
+            os.replace(temp_path, cfg_path)
+            logger.info(f"Persisted updated config to {cfg_path}")
+        except Exception as e:
+            logger.error(f"Failed to persist config to disk ({app.state.config_path}): {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
+
         return {"status": "ok", "config": app.state.config}
 
     @app.post("/api/actions/start")
@@ -151,6 +181,24 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
             pass
         success = runner.gesture.double_tap_like()
         return {"status": "ok" if success else "failed"}
+
+    @app.post("/api/actions/trigger-search")
+    def action_trigger_search(term: Optional[str] = None, videos_to_watch: int = 3):
+        """Triggers TikTok search seeding on device to narrow down FYP algorithm to target niche."""
+        query = term
+        if not query:
+            seed_terms = app.state.config.get("niche", {}).get("seed_terms", [])
+            query = seed_terms[0] if seed_terms else "technology"
+
+        def _worker():
+            try:
+                runner.trigger_search_seeding(term=query, videos_to_watch=videos_to_watch)
+            except Exception as e:
+                logger.error(f"Error during search seeding: {e}")
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return {"status": "started", "term": query, "videos_to_watch": videos_to_watch}
 
     @app.get("/api/screen")
     def get_screen_raw():

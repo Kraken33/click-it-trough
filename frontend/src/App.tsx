@@ -20,6 +20,7 @@ import {
   Sparkles,
   AlertTriangle,
   RefreshCw,
+  Search,
 } from 'lucide-react';
 
 interface SessionStats {
@@ -77,6 +78,9 @@ export default function App() {
   const [newKeyword, setNewKeyword] = useState('');
   const [newSeedTerm, setNewSeedTerm] = useState('');
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isSearching, setIsSearching] = useState(false);
+  const [activeSearchTerm, setActiveSearchTerm] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -229,65 +233,170 @@ export default function App() {
     await fetch('/api/actions/test-like', { method: 'POST' });
   };
 
-  const handleSaveConfig = async () => {
-    if (!config) return;
-    setIsSavingConfig(true);
+  const handleTriggerSearch = async (term?: string) => {
+    setIsSearching(true);
+    setActiveSearchTerm(term || 'Niche Seeds');
     try {
-      await fetch('/api/config', {
+      const url = term
+        ? `/api/actions/trigger-search?term=${encodeURIComponent(term)}&videos_to_watch=${config?.niche?.seed_videos_per_term || 3}`
+        : `/api/actions/trigger-search?videos_to_watch=${config?.niche?.seed_videos_per_term || 3}`;
+      await fetch(url, { method: 'POST' });
+    } catch (e) {
+      console.error('Trigger search error', e);
+    } finally {
+      setTimeout(() => {
+        setIsSearching(false);
+        setActiveSearchTerm(null);
+      }, 4000);
+    }
+  };
+
+  const handleSaveConfig = async (newConfigToSave?: any) => {
+    const cfg = newConfigToSave || config;
+    if (!cfg) return;
+    setIsSavingConfig(true);
+    setSaveStatus('saving');
+    try {
+      const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: JSON.stringify(cfg),
       });
-      fetchConfig();
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setConfig(data.config);
+        }
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2500);
+      } else {
+        setSaveStatus('error');
+      }
+    } catch (e) {
+      console.error('Failed to save config:', e);
+      setSaveStatus('error');
     } finally {
       setIsSavingConfig(false);
     }
   };
 
+  const parseBulkInput = (input: string, isKeyword: boolean = false): string[] => {
+    if (!input || !input.trim()) return [];
+    const raw = input.trim();
+    let items: string[] = [];
+
+    if (raw.includes('#')) {
+      items = raw
+        .split(/[\s,;\n]+/)
+        .map((s) => s.replace(/^#+/, '').trim())
+        .filter((s) => s.length > 0);
+      if (items.length === 1 && items[0].includes('#')) {
+        items = raw
+          .split('#')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+      }
+    } else if (/[,;\n]/.test(raw)) {
+      items = raw
+        .split(/[,;\n]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    } else {
+      items = [raw];
+    }
+
+    const cleaned: string[] = [];
+    for (const item of items) {
+      const val = isKeyword ? item.toLowerCase().trim() : item.trim();
+      if (val && !cleaned.includes(val)) {
+        cleaned.push(val);
+      }
+    }
+    return cleaned;
+  };
+
   const addKeyword = () => {
     if (!newKeyword.trim() || !config) return;
-    const current = config.niche.target_keywords || [];
-    if (!current.includes(newKeyword.trim())) {
-      setConfig({
+    const toAdd = parseBulkInput(newKeyword, true);
+    if (toAdd.length === 0) return;
+
+    const current = config.niche?.target_keywords || [];
+    const newKeywords = toAdd.filter((kw) => !current.includes(kw));
+
+    if (newKeywords.length > 0) {
+      const updated = {
         ...config,
-        niche: { ...config.niche, target_keywords: [...current, newKeyword.trim().toLowerCase()] },
-      });
+        niche: { ...config.niche, target_keywords: [...current, ...newKeywords] },
+      };
+      setConfig(updated);
+      handleSaveConfig(updated);
     }
     setNewKeyword('');
   };
 
   const removeKeyword = (kw: string) => {
     if (!config) return;
-    setConfig({
+    const updated = {
       ...config,
       niche: {
         ...config.niche,
-        target_keywords: config.niche.target_keywords.filter((k: string) => k !== kw),
+        target_keywords: (config.niche?.target_keywords || []).filter((k: string) => k !== kw),
       },
-    });
+    };
+    setConfig(updated);
+    handleSaveConfig(updated);
+  };
+
+  const clearAllKeywords = () => {
+    if (!config) return;
+    const updated = {
+      ...config,
+      niche: { ...config.niche, target_keywords: [] },
+    };
+    setConfig(updated);
+    handleSaveConfig(updated);
   };
 
   const addSeedTerm = () => {
     if (!newSeedTerm.trim() || !config) return;
-    const current = config.niche.seed_terms || [];
-    if (!current.includes(newSeedTerm.trim())) {
-      setConfig({
+    const toAdd = parseBulkInput(newSeedTerm, false);
+    if (toAdd.length === 0) return;
+
+    const current = config.niche?.seed_terms || [];
+    const newTerms = toAdd.filter((term) => !current.includes(term));
+
+    if (newTerms.length > 0) {
+      const updated = {
         ...config,
-        niche: { ...config.niche, seed_terms: [...current, newSeedTerm.trim()] },
-      });
+        niche: { ...config.niche, seed_terms: [...current, ...newTerms] },
+      };
+      setConfig(updated);
+      handleSaveConfig(updated);
     }
     setNewSeedTerm('');
   };
 
   const removeSeedTerm = (term: string) => {
     if (!config) return;
-    setConfig({
+    const updated = {
       ...config,
       niche: {
         ...config.niche,
-        seed_terms: config.niche.seed_terms.filter((t: string) => t !== term),
+        seed_terms: (config.niche?.seed_terms || []).filter((t: string) => t !== term),
       },
-    });
+    };
+    setConfig(updated);
+    handleSaveConfig(updated);
+  };
+
+  const clearAllSeedTerms = () => {
+    if (!config) return;
+    const updated = {
+      ...config,
+      niche: { ...config.niche, seed_terms: [] },
+    };
+    setConfig(updated);
+    handleSaveConfig(updated);
   };
 
   const formatSeconds = (sec: number) => {
@@ -545,6 +654,23 @@ export default function App() {
             >
               <Smartphone className="w-3.5 h-3.5 text-pink-400" /> Capture Screen Snapshot
             </button>
+
+            <button
+              onClick={() => handleTriggerSearch()}
+              disabled={isSearching}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-cyan-300 border border-cyan-500/30 text-xs font-medium transition disabled:opacity-50"
+            >
+              {isSearching ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                  Seeding ({activeSearchTerm || 'Niche'})...
+                </>
+              ) : (
+                <>
+                  <Search className="w-3.5 h-3.5 text-cyan-400" /> Trigger Niche Search
+                </>
+              )}
+            </button>
           </div>
         </div>
 
@@ -687,13 +813,24 @@ export default function App() {
               {activeTab === 'niche' && config && (
                 <div className="space-y-5">
                   <div>
-                    <label className="text-xs font-semibold text-gray-300 block mb-1.5">
-                      Target Niche Keywords (OCR matches in captions boost dwell & like rates)
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-semibold text-gray-300">
+                        Target Niche Keywords (OCR matches in captions boost dwell & like rates)
+                      </label>
+                      {(config.niche?.target_keywords || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearAllKeywords}
+                          className="text-[11px] text-gray-500 hover:text-red-400 transition"
+                        >
+                          Clear all ({(config.niche?.target_keywords || []).length})
+                        </button>
+                      )}
+                    </div>
                     <div className="flex gap-2 mb-2">
                       <input
                         type="text"
-                        placeholder="e.g. artificial intelligence, web3, fitness..."
+                        placeholder="Single or bulk: #kukirin #ausom #lonnyo or kukirin, ausom, lonnyo"
                         value={newKeyword}
                         onChange={(e) => setNewKeyword(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
@@ -701,13 +838,16 @@ export default function App() {
                       />
                       <button
                         onClick={addKeyword}
-                        className="px-3 py-2 bg-pink-600 hover:bg-pink-500 text-white rounded-lg text-xs font-medium transition"
+                        className="px-3 py-2 bg-pink-600 hover:bg-pink-500 text-white rounded-lg text-xs font-medium transition whitespace-nowrap"
                       >
-                        Add Tag
+                        {(() => {
+                          const count = parseBulkInput(newKeyword, true).length;
+                          return count > 1 ? `Add (${count}) Tags` : 'Add Tag';
+                        })()}
                       </button>
                     </div>
                     <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
-                      {(config.niche.target_keywords || []).map((kw: string) => (
+                      {(config.niche?.target_keywords || []).map((kw: string) => (
                         <span
                           key={kw}
                           className="px-2.5 py-1 rounded-lg bg-gray-800 text-pink-400 border border-gray-700 text-xs flex items-center gap-1.5"
@@ -725,13 +865,24 @@ export default function App() {
                   </div>
 
                   <div className="border-t border-gray-800 pt-4">
-                    <label className="text-xs font-semibold text-gray-300 block mb-1.5">
-                      Initial Search Seeding Terms (Searches these queries to steer FYP algorithm)
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-semibold text-gray-300">
+                        Initial Search Seeding Terms (Searches these queries to steer FYP algorithm)
+                      </label>
+                      {(config.niche?.seed_terms || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearAllSeedTerms}
+                          className="text-[11px] text-gray-500 hover:text-red-400 transition"
+                        >
+                          Clear all ({(config.niche?.seed_terms || []).length})
+                        </button>
+                      )}
+                    </div>
                     <div className="flex gap-2 mb-2">
                       <input
                         type="text"
-                        placeholder="e.g. tech gadgets, coding tutorials..."
+                        placeholder="Single or bulk: #kukirin #ausom #lonnyo or kukirin, ausom, lonnyo"
                         value={newSeedTerm}
                         onChange={(e) => setNewSeedTerm(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && addSeedTerm()}
@@ -739,18 +890,30 @@ export default function App() {
                       />
                       <button
                         onClick={addSeedTerm}
-                        className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded-lg text-xs font-medium transition"
+                        className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 rounded-lg text-xs font-medium transition whitespace-nowrap"
                       >
-                        Add Term
+                        {(() => {
+                          const count = parseBulkInput(newSeedTerm, false).length;
+                          return count > 1 ? `Add (${count}) Terms` : 'Add Term';
+                        })()}
                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(config.niche.seed_terms || []).map((term: string) => (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {(config.niche?.seed_terms || []).map((term: string) => (
                         <span
                           key={term}
-                          className="px-2.5 py-1 rounded-lg bg-gray-900 text-cyan-300 border border-cyan-500/20 text-xs flex items-center gap-1.5"
+                          className="px-2.5 py-1 rounded-lg bg-gray-900 text-cyan-300 border border-cyan-500/20 text-xs flex items-center gap-2"
                         >
-                          🔍 {term}
+                          <span>🔍 {term}</span>
+                          <button
+                            type="button"
+                            title={`Search '${term}' on TikTok now`}
+                            onClick={() => handleTriggerSearch(term)}
+                            disabled={isSearching}
+                            className="px-1.5 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 hover:text-white text-[10px] font-semibold flex items-center gap-1 transition"
+                          >
+                            <Play className="w-2.5 h-2.5 fill-current" /> Search
+                          </button>
                           <button
                             onClick={() => removeSeedTerm(term)}
                             className="text-gray-500 hover:text-red-400"
@@ -760,15 +923,87 @@ export default function App() {
                         </span>
                       ))}
                     </div>
+
+                    {/* Search Seeding Controls Card */}
+                    <div className="p-3 rounded-xl bg-gray-900/80 border border-gray-800 flex flex-col gap-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={!!config.niche?.seed_search_enabled}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: { ...config.niche, seed_search_enabled: e.target.checked },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="accent-pink-500 rounded cursor-pointer"
+                          />
+                          <span className="text-xs text-gray-300 font-medium">Auto-seed search at warming start</span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                          <span>Videos/query:</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={config.niche?.seed_videos_per_term || 3}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: { ...config.niche, seed_videos_per_term: Number(e.target.value) },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-12 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1.5 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerSearch()}
+                        disabled={isSearching || (config.niche?.seed_terms || []).length === 0}
+                        className="w-full py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/10"
+                      >
+                        {isSearching ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            Seeding Search ({activeSearchTerm || 'Niche'})...
+                          </>
+                        ) : (
+                          <>
+                            <Search className="w-3.5 h-3.5" />
+                            Trigger Niche Search Seeding Now
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   <button
-                    onClick={handleSaveConfig}
+                    onClick={() => handleSaveConfig()}
                     disabled={isSavingConfig}
-                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition disabled:opacity-50"
+                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {isSavingConfig ? 'Saving...' : 'Apply Niche Settings'}
+                    {saveStatus === 'saving' ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Saving to disk...
+                      </>
+                    ) : saveStatus === 'saved' ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" /> Saved to default_config.yaml!
+                      </>
+                    ) : (
+                      'Apply & Save Niche Settings'
+                    )}
                   </button>
+                  <p className="text-[11px] text-gray-500 text-center">
+                    All added niche tags and seed terms auto-save to config/default_config.yaml.
+                  </p>
                 </div>
               )}
 
@@ -902,11 +1137,21 @@ export default function App() {
                   </div>
 
                   <button
-                    onClick={handleSaveConfig}
+                    onClick={() => handleSaveConfig()}
                     disabled={isSavingConfig}
-                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition mt-2 disabled:opacity-50"
+                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition mt-2 disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {isSavingConfig ? 'Saving...' : 'Apply Probability Settings'}
+                    {saveStatus === 'saving' ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Saving to disk...
+                      </>
+                    ) : saveStatus === 'saved' ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" /> Saved to default_config.yaml!
+                      </>
+                    ) : (
+                      'Apply Probability Settings'
+                    )}
                   </button>
                 </div>
               )}

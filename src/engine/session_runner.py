@@ -169,6 +169,37 @@ class SessionRunner:
         self._skip_flag.set()
         self._broadcast_status("Skipping current video...")
 
+    def trigger_search_seeding(self, term: Optional[str] = None, videos_to_watch: int = 3) -> bool:
+        """Manually triggers search seeding for a given query or from configured seed terms."""
+        query = term
+        if not query:
+            if self.trainer.seed_terms:
+                query = random.choice(self.trainer.seed_terms)
+            else:
+                query = "technology"
+
+        try:
+            w, h = self.wda.get_window_size()
+            self.gesture.screen_width = w
+            self.gesture.screen_height = h
+        except Exception:
+            pass
+
+        self._broadcast_status(f"Triggering niche search: '{query}'")
+        success = self.trainer.perform_search_seeding(
+            client=self.wda,
+            gesture=self.gesture,
+            term=query,
+            videos_to_watch=videos_to_watch,
+            on_progress=lambda msg: self._broadcast_status(msg),
+        )
+        if success:
+            self.stats.videos_watched += videos_to_watch
+            self.stats.likes_count += 1
+            self.stats.niche_matched_count += videos_to_watch
+            self._broadcast_status(f"Search seeding for '{query}' complete!")
+        return success
+
     def _sample_dwell_time(self, is_niche_match: bool, is_ad: bool) -> float:
         dwell_cfg = self.config.get("dwell_time", {})
         if is_ad:
@@ -213,6 +244,13 @@ class SessionRunner:
         probs = self.config.get("probabilities", {})
         safety_cfg = self.config.get("safety", {})
         enable_ocr = self.config.get("vision", {}).get("enabled", False)
+
+        # 3. Optional Search Seeding if enabled in config
+        niche_cfg = self.config.get("niche", {})
+        if niche_cfg.get("seed_search_enabled", False) and self.trainer.seed_terms and not self._stop_event.is_set():
+            seed_term = random.choice(self.trainer.seed_terms)
+            seed_count = int(niche_cfg.get("seed_videos_per_term", 3))
+            self.trigger_search_seeding(term=seed_term, videos_to_watch=seed_count)
 
         # Main Lightweight Browsing Loop (Zero-Weight Pure Touch Mode)
         while not self._stop_event.is_set():

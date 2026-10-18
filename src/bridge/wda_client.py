@@ -248,6 +248,24 @@ class WDAClient:
             )
         return resp.status_code == 200
 
+    def send_keys(self, text: str) -> bool:
+        """Sends keystrokes to active iOS input field via WDA /wda/keys."""
+        session_id = self.ensure_session()
+        payload = {"value": list(text)}
+        resp = self.http.post(
+            self._url(f"/session/{session_id}/wda/keys"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/keys"),
+                json=payload,
+                timeout=self.timeout,
+            )
+        return resp.status_code == 200
+
     def get_window_size(self) -> Tuple[int, int]:
         """Returns (width, height) of the device screen in UI points."""
         if self._window_size:
