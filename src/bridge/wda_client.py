@@ -168,6 +168,41 @@ class WDAClient:
             )
         return resp.status_code == 200
 
+    def press_and_drag_with_velocity(
+        self,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        velocity: float = 2600.0,
+        press_duration: float = 0.01,
+        hold_duration: float = 0.0,
+    ) -> bool:
+        """Executes native Apple XCTest drag with specified fling velocity for guaranteed pagination."""
+        session_id = self.ensure_session()
+        payload = {
+            "fromX": int(from_x),
+            "fromY": int(from_y),
+            "toX": int(to_x),
+            "toY": int(to_y),
+            "pressDuration": float(press_duration),
+            "velocity": float(velocity),
+            "holdDuration": float(hold_duration),
+        }
+        resp = self.http.post(
+            self._url(f"/session/{session_id}/wda/pressAndDragWithVelocity"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/pressAndDragWithVelocity"),
+                json=payload,
+                timeout=self.timeout,
+            )
+        return resp.status_code == 200
+
     def tap(self, x: float, y: float, dwell_ms: int = 60) -> bool:
         """Executes native WDA tap at coordinates (x, y)."""
         session_id = self.ensure_session()

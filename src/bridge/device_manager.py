@@ -126,5 +126,17 @@ class DeviceManager:
             self._last_screenshot_ts = now
             return img
         except Exception as e:
+            # Try discovering direct CoreDevice tunnel if localhost failed
+            tunnel_url = self.discover_tunnel_url()
+            if tunnel_url and tunnel_url != self.wda_url:
+                try:
+                    self.wda_url = tunnel_url
+                    self.client = WDAClient(base_url=tunnel_url)
+                    img = self.client.screenshot()
+                    self._last_screenshot = img
+                    self._last_screenshot_ts = now
+                    return img
+                except Exception:
+                    pass
             logger.debug(f"Screenshot capture failed: {e}")
             return self._last_screenshot
