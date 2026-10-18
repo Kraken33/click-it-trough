@@ -264,13 +264,6 @@ class SessionRunner:
                 self.stats.current_dwell_remaining = round(remaining, 1)
                 self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
                 time.sleep(0.3)
-
-            self.stats.videos_watched += 1
-                remaining = max(0.0, dwell - (time.time() - dwell_start))
-                self.stats.current_dwell_remaining = round(remaining, 1)
-                self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
-                time.sleep(0.2)
-
             self.stats.videos_watched += 1
             if is_ad:
                 self.stats.ads_skipped += 1

@@ -76,6 +76,7 @@ class WDAClient:
                         val = resp.json().get("value", {})
                         if not isinstance(val, dict) or "error" not in val:
                             self.session_id = active_id
+                            self._apply_session_settings()
                             return self.session_id
             except Exception:
                 pass
@@ -85,6 +86,11 @@ class WDAClient:
             "capabilities": {
                 "alwaysMatch": {
                     "shouldWaitForQuiescence": False,
+                    "waitForIdleTimeout": 0,
+                    "animationCoolOffTimeout": 0,
+                    "accessibilityDeadline": 0,
+                    "disableAutomaticScreenshots": True,
+                    "eventloopIdleDelaySec": 0,
                     "useNewWDA": False,
                 }
             }
@@ -100,17 +106,17 @@ class WDAClient:
         return self.session_id
 
     def _apply_session_settings(self):
-        """Disables quiescence and idle waiting in XCTest so video animations don't block input."""
+        """Disables quiescence and routes touches through SpringBoard to avoid TikTok process hooks."""
         if not self.session_id:
             return
         try:
             settings_payload = {
                 "settings": {
-                    "waitForQuiescence": False,
+                    "defaultActiveApplication": "com.apple.springboard",
                     "waitForIdleTimeout": 0,
                     "animationCoolOffTimeout": 0,
-                    "shouldUseTestManagerForVisibilityDetection": False,
-                    "snapshotTimeout": 1.0,
+                    "accessibilityDeadline": 0,
+                    "snapshotMaxDepth": 1,
                 }
             }
             self.http.post(self._url(f"/session/{self.session_id}/appium/settings"), json=settings_payload, timeout=2.0)
@@ -137,6 +143,26 @@ class WDAClient:
             session_id = self.ensure_session(force_new=True)
             resp = self.http.post(
                 self._url(f"/session/{session_id}/wda/dragfromtoforduration"),
+                json=payload,
+                timeout=self.timeout,
+            )
+        return resp.status_code == 200
+
+    def swipe(self, direction: str = "up", velocity: Optional[float] = None) -> bool:
+        """Executes native Apple XCTest swipe on screen directly without process hooks."""
+        session_id = self.ensure_session()
+        payload = {"direction": direction.lower()}
+        if velocity:
+            payload["velocity"] = float(velocity)
+        resp = self.http.post(
+            self._url(f"/session/{session_id}/wda/swipe"),
+            json=payload,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200 or "invalid session id" in resp.text:
+            session_id = self.ensure_session(force_new=True)
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/swipe"),
                 json=payload,
                 timeout=self.timeout,
             )

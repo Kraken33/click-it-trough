@@ -110,9 +110,12 @@ class BiometricGestureEngine:
         end_y = h * random.uniform(0.18, 0.24)
 
         # Execute swift native flick (140-210ms prevents TikTok long-press menu activation)
-        return self.client.drag_from_to(
+        success = self.client.drag_from_to(
             start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0
         )
+        if not success:
+            return self.client.swipe(direction="up", velocity=2200)
+        return True
 
     def swipe_previous_video(self) -> bool:
         """Performs an organic downward swipe to return to the previous video."""
@@ -125,9 +128,12 @@ class BiometricGestureEngine:
         end_y = h * random.uniform(0.68, 0.74)
 
         # Execute native Apple XCTest downward drag
-        return self.client.drag_from_to(
+        success = self.client.drag_from_to(
             start_x, start_y, end_x, end_y, duration_sec=dur / 1000.0
         )
+        if not success:
+            return self.client.swipe(direction="down", velocity=2200)
+        return True
 
     def micro_flick(self) -> bool:
         """Simulates an accidental small thumb twitch or partial scroll."""
