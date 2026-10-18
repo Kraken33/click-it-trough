@@ -148,10 +148,19 @@ class WDAClient:
             )
         return resp.status_code == 200
 
-    def swipe(self, direction: str = "up", velocity: Optional[float] = None) -> bool:
-        """Executes native Apple XCTest swipe on screen directly without process hooks."""
+    def swipe(
+        self,
+        direction: str = "up",
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        velocity: Optional[float] = None,
+    ) -> bool:
+        """Executes native Apple XCTest swipe on screen or coordinate directly without process hooks."""
         session_id = self.ensure_session()
-        payload = {"direction": direction.lower()}
+        payload: Dict[str, Any] = {"direction": direction.lower()}
+        if x is not None and y is not None:
+            payload["x"] = int(x)
+            payload["y"] = int(y)
         if velocity:
             payload["velocity"] = float(velocity)
         resp = self.http.post(

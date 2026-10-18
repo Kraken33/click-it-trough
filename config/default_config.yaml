@@ -40,10 +40,10 @@ probabilities:
   like_niche: 0.40                     # 40% when content matches target keywords
   favorite_base: 0.03                  # 3% bookmark on general content
   favorite_niche: 0.16                 # 16% bookmark on niche content
-  comment_drawer_view_base: 0.06       # 6% open comment section
-  comment_drawer_view_niche: 0.22      # 22% open comment section on niche videos
-  rewatch_swipe_back: 0.04             # 4% re-watch previous video
-  micro_flick: 0.03                    # 3% accidental partial swipe
+  comment_drawer_view_base: 0.0        # Disabled to avoid stuck comment drawers
+  comment_drawer_view_niche: 0.0
+  rewatch_swipe_back: 0.0              # Disabled so feed always advances forward
+  micro_flick: 0.0                     # Disabled to prevent accidental incomplete scrolls
   double_tap_ratio: 0.75               # 75% double-tap to like, 25% tap heart icon
 
 physics:

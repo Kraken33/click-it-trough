@@ -101,42 +101,39 @@ class BiometricGestureEngine:
         # Screen dimensions
         w, h = self.screen_width, self.screen_height
 
-        # Start position: Safe center column (avoids left caption box and right action icons)
-        start_x = w * random.uniform(0.46, 0.54)
-        # Start lower on the screen (~70% - 75% height) for full vertical clearance
-        start_y = h * random.uniform(0.70, 0.75)
+        # Start position: Safe center area (58% to 63% height is completely clear of all captions, hashtags, and sound tags)
+        start_x = w * random.uniform(0.48, 0.52)
+        start_y = h * random.uniform(0.58, 0.63)
 
-        # End position: Upper screen (~12% - 17% height)
-        # Delta is ~60% of screen height, guaranteeing scroll pagination snaps to next video
-        end_x = start_x + (random.uniform(-16, -4) if hand == "right" else random.uniform(4, 16))
-        end_y = h * random.uniform(0.12, 0.17)
-
-        # Execute high-momentum flick (2500-3100 pt/s with 0 hold duration for authentic snap)
-        speed = random.uniform(2500.0, 3100.0)
-        success = self.client.press_and_drag_with_velocity(
-            start_x, start_y, end_x, end_y, velocity=speed, press_duration=0.01, hold_duration=0.0
-        )
+        # High-velocity native flick (Apple XCTest coordinate swipeUp)
+        speed = random.uniform(2700.0, 3300.0)
+        success = self.client.swipe(direction="up", x=start_x, y=start_y, velocity=speed)
         if not success:
-            return self.client.swipe(direction="up", velocity=2600)
-        return True
+            # Fallback: high-momentum fling across 45% screen distance
+            end_x = start_x + (random.uniform(-14, -4) if hand == "right" else random.uniform(4, 14))
+            end_y = h * random.uniform(0.14, 0.18)
+            success = self.client.press_and_drag_with_velocity(
+                start_x, start_y, end_x, end_y, velocity=speed, press_duration=0.01, hold_duration=0.0
+            )
+        return success
 
     def swipe_previous_video(self) -> bool:
         """Performs an organic downward swipe to return to the previous video."""
         w, h = self.screen_width, self.screen_height
 
-        start_x = w * random.uniform(0.46, 0.54)
-        start_y = h * random.uniform(0.14, 0.20)
-        end_x = start_x + random.uniform(-15, 15)
-        end_y = h * random.uniform(0.72, 0.78)
+        start_x = w * random.uniform(0.48, 0.52)
+        start_y = h * random.uniform(0.20, 0.25)
 
-        # Execute native downward fling
-        speed = random.uniform(2400.0, 2900.0)
-        success = self.client.press_and_drag_with_velocity(
-            start_x, start_y, end_x, end_y, velocity=speed, press_duration=0.01, hold_duration=0.0
-        )
+        # Native downward flick
+        speed = random.uniform(2500.0, 3000.0)
+        success = self.client.swipe(direction="down", x=start_x, y=start_y, velocity=speed)
         if not success:
-            return self.client.swipe(direction="down", velocity=2600)
-        return True
+            end_x = start_x + random.uniform(-12, 12)
+            end_y = h * random.uniform(0.70, 0.75)
+            success = self.client.press_and_drag_with_velocity(
+                start_x, start_y, end_x, end_y, velocity=speed, press_duration=0.01, hold_duration=0.0
+            )
+        return success
 
     def micro_flick(self) -> bool:
         """Simulates an accidental small thumb twitch or partial scroll."""
