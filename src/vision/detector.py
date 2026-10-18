@@ -334,28 +334,37 @@ class ScreenDetector:
 
         return "unknown", []
 
-    def extract_likes_and_signature(self, screen_image: Image.Image) -> Tuple[Optional[str], str]:
+    def extract_likes_amount(self, screen_image: Image.Image) -> Optional[str]:
         """
-        Extracts the likes count (below the heart icon in the right action sidebar)
-        and content signature (body text/captions) from a TikTok video screen.
-        Returns (likes_count_str, content_signature_str).
+        Extracts the likes count strictly from the dedicated like zone on the right action sidebar.
+        Dedicated zone: cx >= 0.80 and 0.50 <= cy <= 0.62 (directly below the heart icon, above comments).
+        Returns the parsed like count string (e.g. '1,454', '43.2K', '1.2M') or None if not present.
         """
         obs = self.ocr.extract_observations(screen_image)
         if not obs:
-            return None, ""
+            return None
 
-        like_candidates = []
+        candidates = []
         for text, cx, cy, w, h in obs:
-            if cx > 0.82 and 0.52 <= cy <= 0.65:
-                cleaned = text.replace(" ", "").upper()
-                if re.match(r"^\d+([.,]\d+)?[KMB]?$", cleaned):
-                    like_candidates.append((cy, cleaned))
+            if cx >= 0.78 and 0.48 <= cy <= 0.62:
+                cleaned = text.replace(" ", "").replace("·", "").replace("•", "").upper()
+                if re.match(r"^\d[0-9.,]*[KMB]?$", cleaned):
+                    candidates.append((cy, cleaned))
 
-        like_count = None
-        if like_candidates:
-            like_candidates.sort(key=lambda item: abs(item[0] - 0.595))
-            like_count = like_candidates[0][1]
+        if not candidates:
+            return None
 
+        # The like count is the topmost metric in the right action column
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+
+    def extract_likes_and_signature(self, screen_image: Image.Image) -> Tuple[Optional[str], str]:
+        """
+        Extracts the likes count from the dedicated zone and content signature (body text).
+        Returns (likes_count_str, content_signature_str).
+        """
+        like_count = self.extract_likes_amount(screen_image)
+        obs = self.ocr.extract_observations(screen_image)
         body_texts = [
             text for text, cx, cy, w, h in obs
             if 0.12 <= cy <= 0.90 and cx < 0.85 and len(text) > 2
@@ -372,47 +381,32 @@ class ScreenDetector:
     ) -> Tuple[bool, str]:
         """
         Verifies whether the video on screen changed after a swipe gesture.
-        Uses the likes amount as the primary verification:
-        - If likes changed -> Video changed.
-        - If likes are identical -> Same video.
-        - If likes could not be extracted on one or both -> Falls back to content signature comparison.
-        Returns (has_changed, reason_description).
+        Strictly requires that the amount of likes in the dedicated zone has changed:
+        - If no likes amount is detected in the dedicated zone before or after swipe:
+          something went wrong (returns False).
+        - If likes amount is unchanged (before == after):
+          we are still on the same video (returns False).
+        - If likes amount changed (before != after):
+          video change is confirmed (returns True).
         """
-        if before_likes is None or before_sig is None:
-            b_likes, b_sig = self.extract_likes_and_signature(before_image)
-            before_likes = before_likes or b_likes
-            before_sig = before_sig or b_sig
+        if before_likes is None:
+            before_likes = self.extract_likes_amount(before_image)
 
-        after_likes, after_sig = self.extract_likes_and_signature(after_image)
+        after_likes = self.extract_likes_amount(after_image)
 
-        # 1. Primary check: Likes amount
-        if before_likes is not None and after_likes is not None:
-            if before_likes != after_likes:
-                return True, f"Likes changed: {before_likes} -> {after_likes}"
-            else:
-                if before_sig and after_sig and before_sig == after_sig:
-                    return False, f"Likes unchanged ({before_likes}) and identical content"
-                elif not before_sig and not after_sig:
-                    return False, f"Likes unchanged ({before_likes})"
-                if before_sig and after_sig:
-                    from difflib import SequenceMatcher
-                    ratio = SequenceMatcher(None, before_sig.lower(), after_sig.lower()).ratio()
-                    if ratio > 0.60:
-                        return False, f"Likes unchanged ({before_likes}) and content match {ratio:.0%}"
-                    else:
-                        return True, f"Content changed despite same like count ({before_likes})"
+        # Both before and after MUST have a valid likes amount in the dedicated zone
+        if before_likes is None and after_likes is None:
+            return False, "No likes amount in dedicated zone before or after swipe"
 
-        # 2. Fallback check: Content signature if likes count was obscured
-        if before_sig and after_sig:
-            from difflib import SequenceMatcher
-            ratio = SequenceMatcher(None, before_sig.lower(), after_sig.lower()).ratio()
-            if ratio < 0.45:
-                return True, f"Content changed ({ratio:.0%} match)"
-            else:
-                return False, f"Content unchanged ({ratio:.0%} match)"
+        if before_likes is None:
+            return False, f"No likes amount in dedicated zone before swipe (after={after_likes})"
 
-        if (before_likes is None) != (after_likes is None):
-            return True, f"Likes indicator changed ({before_likes} vs {after_likes})"
+        if after_likes is None:
+            return False, f"No likes amount in dedicated zone after swipe (before={before_likes})"
 
-        return False, "Could not detect distinct video markers"
+        # Verification check: did the likes amount change?
+        if before_likes == after_likes:
+            return False, f"Likes amount unchanged ({before_likes}) - still on the same video"
+
+        return True, f"Likes changed: {before_likes} -> {after_likes}"
 

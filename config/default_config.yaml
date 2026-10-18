@@ -38,6 +38,8 @@ niche:
   - povride
   - pevracing
   - electricmobility
+  - vsett
+  - flipsky
   target_keywords:
   - kukirin
   - ausom
@@ -64,6 +66,8 @@ niche:
   - povride
   - pevracing
   - electricmobility
+  - vsett
+  - flipsky
   seed_videos_min: 2
   seed_videos_max: 5
   seed_video_dwell_min_sec: 7

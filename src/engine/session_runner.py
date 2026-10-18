@@ -364,16 +364,36 @@ class SessionRunner:
     def swipe_next_video_verified(self, max_retries: int = 3) -> Tuple[bool, str]:
         """
         Executes swipe to next video and verifies that the video changed
-        by checking that the likes count (and content) changed via Vision OCR.
-        If the video did not change (likes stayed identical), it retries the swipe.
+        by strictly checking that the likes count in the dedicated zone changed.
+        If the video did not change (likes stayed identical or missing), it retries the swipe.
         If 3 swipe attempts fail, detects current screen state (comments, share, etc.)
         and recovers back to the video feed.
         Returns (has_changed, reason_description).
         """
         before_img = self.device_manager.get_screen()
-        before_likes, before_sig = (None, "")
-        if before_img:
-            before_likes, before_sig = self.detector.extract_likes_and_signature(before_img)
+        before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
+
+        # If likes aren't detected immediately, wait briefly and retry (UI animation / buffering)
+        if before_likes is None and before_img:
+            for _ in range(3):
+                time.sleep(0.6)
+                before_img = self.device_manager.get_screen()
+                before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
+                if before_likes is not None:
+                    break
+
+        # If still no likes amount, check if we're on an overlay or wrong tab and recover
+        if before_likes is None and before_img:
+            state, markers = self.detector.detect_screen_state(before_img)
+            if state != "feed":
+                logger.warning(
+                    f"No likes in dedicated zone prior to swipe (state='{state}'). Recovering to video feed..."
+                )
+                self._broadcast_status(f"Screen on '{state}', recovering to video feed...")
+                self.recover_to_feed()
+                time.sleep(1.0)
+                before_img = self.device_manager.get_screen()
+                before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
 
         last_reason = "No transition detected"
         for attempt in range(1, max_retries + 1):
@@ -384,8 +404,8 @@ class SessionRunner:
             fling_v = 3000.0 if attempt == 1 else (3300.0 + (attempt - 2) * 200.0)
             self.gesture.swipe_next_video(velocity=fling_v)
 
-            # Wait natural video stabilization time
-            time.sleep(1.0)
+            # Wait natural video & UI element render time so likes count is fully displayed
+            time.sleep(1.2)
 
             after_img = self.device_manager.get_screen()
             if after_img:
@@ -393,7 +413,6 @@ class SessionRunner:
                     before_img or after_img,
                     after_img,
                     before_likes=before_likes,
-                    before_sig=before_sig,
                 )
                 last_reason = reason
                 if changed:
@@ -402,10 +421,15 @@ class SessionRunner:
                     return True, reason
                 else:
                     logger.warning(
-                        f"Video did not change after swipe [{reason}], retrying ({attempt}/{max_retries})..."
+                        f"Swipe unconfirmed [{reason}], retrying ({attempt}/{max_retries})..."
                     )
-                    self._broadcast_status(f"Video unchanged ({reason}), retrying...")
-                    time.sleep(0.4)
+                    self._broadcast_status(f"Swipe unconfirmed: {reason}, retrying...")
+                    # Advance baseline to current screen so subsequent retry checks against the current video
+                    current_likes = self.detector.extract_likes_amount(after_img)
+                    if current_likes is not None:
+                        before_likes = current_likes
+                        before_img = after_img
+                    time.sleep(0.5)
 
         # 3 swipe attempts failed: detect screen state and initiate recovery back to video feed
         logger.warning(
@@ -416,25 +440,27 @@ class SessionRunner:
         if recovered:
             self._broadcast_status(f"Recovered from '{current_state}' back to video feed. Retrying swipe...")
             logger.info(f"Successfully recovered from '{current_state}' back to feed. Executing verified swipe...")
-            time.sleep(0.5)
-            feed_img = self.device_manager.get_screen()
-            feed_likes, feed_sig = (
-                self.detector.extract_likes_and_signature(feed_img) if feed_img else (None, "")
-            )
-            self.gesture.swipe_next_video(velocity=3200.0)
             time.sleep(1.0)
+            feed_img = self.device_manager.get_screen()
+            feed_likes = self.detector.extract_likes_amount(feed_img) if feed_img else None
+            if feed_likes is None:
+                time.sleep(0.8)
+                feed_img = self.device_manager.get_screen()
+                feed_likes = self.detector.extract_likes_amount(feed_img) if feed_img else None
+
+            self.gesture.swipe_next_video(velocity=3300.0)
+            time.sleep(1.2)
             post_swipe_img = self.device_manager.get_screen()
             if post_swipe_img:
                 changed, reason = self.detector.did_video_change(
                     feed_img or post_swipe_img,
                     post_swipe_img,
                     before_likes=feed_likes,
-                    before_sig=feed_sig,
                 )
                 if changed:
                     self._broadcast_status(f"Video changed after recovery [{reason}]")
                     return True, f"Recovered from {current_state} & changed [{reason}]"
-                return False, f"Recovered from {current_state} but swipe unchanged [{reason}]"
+                return False, f"Recovered from {current_state} but swipe unconfirmed [{reason}]"
             return True, f"Recovered from {current_state}"
 
         return False, f"Failed to recover to feed from '{current_state}'"
