@@ -1,0 +1,74 @@
+# TikTok iPhone Automation & Account Warming Configuration
+
+device:
+  wda_url: "http://localhost:8100"
+  bundle_id: "com.zhiliaoapp.musically"  # Standard TikTok iOS app bundle identifier
+  reconnect_interval_sec: 5
+  screen_width: 393                    # Points (will auto-detect from WDA)
+  screen_height: 852                   # Points (will auto-detect from WDA)
+
+niche:
+  seed_search_enabled: true
+  seed_terms:
+    - "tech innovation"
+    - "ai coding tools"
+    - "software engineering"
+    - "cool gadgets"
+  target_keywords:
+    - "code"
+    - "developer"
+    - "software"
+    - "python"
+    - "ai"
+    - "tech"
+    - "programmer"
+    - "gadget"
+    - "engineering"
+    - "webdev"
+  seed_videos_per_term: 3
+
+dwell_time:
+  min_seconds: 3.5
+  max_seconds: 40.0
+  mean_seconds: 11.0
+  niche_match_multiplier: 2.2
+  ad_skip_seconds: 1.2
+  live_skip_seconds: 0.8
+
+probabilities:
+  like_base: 0.10                      # 10% on random FYP content
+  like_niche: 0.40                     # 40% when content matches target keywords
+  favorite_base: 0.03                  # 3% bookmark on general content
+  favorite_niche: 0.16                 # 16% bookmark on niche content
+  comment_drawer_view_base: 0.06       # 6% open comment section
+  comment_drawer_view_niche: 0.22      # 22% open comment section on niche videos
+  rewatch_swipe_back: 0.04             # 4% re-watch previous video
+  micro_flick: 0.03                    # 3% accidental partial swipe
+  double_tap_ratio: 0.75               # 75% double-tap to like, 25% tap heart icon
+
+physics:
+  handedness: "right"                  # "right" or "left" thumb pivot
+  curve_deviation_px: 24.0             # Bézier arc peak curvature
+  jitter_intensity_px: 2.0             # Micro-wobble / tremor intensity
+  min_swipe_duration_ms: 280
+  max_swipe_duration_ms: 440
+
+safety:
+  max_daily_videos: 150
+  max_daily_likes: 35
+  max_daily_favorites: 15
+  auto_pause_on_captcha: true
+  play_sound_on_alert: true
+  macos_notification: true
+  screenshot_dir: "logs/captchas"
+
+scheduler:
+  enabled: true
+  sessions_per_day: 3
+  session_duration_min: 12
+  session_duration_max: 24
+  start_jitter_minutes: 20
+  windows:
+    morning: ["08:30", "10:15"]
+    afternoon: ["12:45", "14:30"]
+    evening: ["19:30", "22:15"]

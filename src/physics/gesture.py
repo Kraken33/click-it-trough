@@ -1,0 +1,264 @@
+import math
+import random
+import time
+from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
+
+from ..bridge.wda_client import WDAClient
+
+
+class BiometricGestureEngine:
+    """
+    Simulates authentic human touch biomechanics on mobile touchscreens.
+    Generates cubic Bézier curved trajectories, non-linear velocity profiles,
+    and micro-tremor coordinate jitter to defeat anti-bot telemetry.
+    """
+
+    def __init__(
+        self,
+        client: WDAClient,
+        screen_width: int = 393,
+        screen_height: int = 852,
+        handedness: str = "right",
+        curve_deviation_px: float = 24.0,
+        jitter_intensity_px: float = 2.0,
+    ):
+        self.client = client
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.handedness = handedness.lower()
+        self.curve_deviation_px = curve_deviation_px
+        self.jitter_intensity_px = jitter_intensity_px
+
+    def _generate_bezier_curve(
+        self,
+        p0: Tuple[float, float],
+        p1: Tuple[float, float],
+        p2: Tuple[float, float],
+        p3: Tuple[float, float],
+        steps: int = 25,
+    ) -> List[Tuple[float, float]]:
+        """
+        Computes 2D points along a cubic Bézier curve:
+        B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+        """
+        t = np.linspace(0.0, 1.0, steps)
+        # Compute coordinates
+        x = (
+            (1 - t) ** 3 * p0[0]
+            + 3 * (1 - t) ** 2 * t * p1[0]
+            + 3 * (1 - t) * t ** 2 * p2[0]
+            + t ** 3 * p3[0]
+        )
+        y = (
+            (1 - t) ** 3 * p0[1]
+            + 3 * (1 - t) ** 2 * t * p1[1]
+            + 3 * (1 - t) * t ** 2 * p2[1]
+            + t ** 3 * p3[1]
+        )
+
+        # Inject subtle human micro-tremor jitter (except endpoints)
+        noise_x = np.random.normal(0, self.jitter_intensity_px, steps)
+        noise_y = np.random.normal(0, self.jitter_intensity_px, steps)
+        noise_x[0] = noise_x[-1] = 0.0
+        noise_y[0] = noise_y[-1] = 0.0
+
+        x_jittered = x + noise_x
+        y_jittered = y + noise_y
+
+        points = [(float(px), float(py)) for px, py in zip(x_jittered, y_jittered)]
+        return points
+
+    def _compute_velocity_durations(self, steps: int, total_duration_ms: int) -> List[int]:
+        """
+        Calculates non-linear time step durations using ease-in-out curve.
+        Human touch accelerates quickly, reaches max speed in the middle, and decelerates gently.
+        """
+        # Generate ease-out / bell curve distribution of speeds
+        t = np.linspace(0, np.pi, steps - 1)
+        # Weights higher in the middle means faster movement -> smaller duration per step
+        weights = 1.0 / (np.sin(t) + 0.4)
+        normalized_weights = weights / np.sum(weights)
+        durations = [max(4, int(w * total_duration_ms)) for w in normalized_weights]
+
+        # Ensure sum matches total_duration_ms
+        diff = total_duration_ms - sum(durations)
+        durations[len(durations) // 2] += diff
+        return durations
+
+    def swipe_next_video(
+        self,
+        duration_ms: Optional[int] = None,
+        handedness: Optional[str] = None,
+    ) -> bool:
+        """
+        Performs an organic upward swipe to transition to the next TikTok video.
+        Follows a natural thumb arc pivoted from the lower screen corner.
+        """
+        hand = (handedness or self.handedness).lower()
+        dur = duration_ms or random.randint(280, 420)
+
+        # Screen dimensions
+        w, h = self.screen_width, self.screen_height
+
+        # Start position (lower-middle screen)
+        # For right-handed, thumb tends to rest slightly to the right of center
+        center_bias_x = 0.58 if hand == "right" else 0.42
+        start_x = w * center_bias_x + random.uniform(-25, 25)
+        start_y = h * random.uniform(0.70, 0.78)
+
+        # End position (upper-middle screen)
+        # Upward swipe arcs toward the hand pivot side or slightly inward
+        end_x = start_x + (random.uniform(-40, -10) if hand == "right" else random.uniform(10, 40))
+        end_y = h * random.uniform(0.18, 0.28)
+
+        # Control points P1 and P2 creating the natural thumb arc
+        arc_deviation = (self.curve_deviation_px + random.uniform(-6, 8)) * (
+            1 if hand == "right" else -1
+        )
+        p0 = (start_x, start_y)
+        p1 = (start_x + arc_deviation, start_y - (start_y - end_y) * 0.3)
+        p2 = (end_x + arc_deviation * 0.7, start_y - (start_y - end_y) * 0.7)
+        p3 = (end_x, end_y)
+
+        steps = random.randint(22, 28)
+        points = self._generate_bezier_curve(p0, p1, p2, p3, steps=steps)
+        durations = self._compute_velocity_durations(steps, dur)
+
+        # Build W3C Actions payload
+        actions_list: List[Dict[str, Any]] = [
+            # Move to start position
+            {"type": "pointerMove", "duration": 0, "x": int(points[0][0]), "y": int(points[0][1])},
+            # Finger touch down with small initial contact dwell (15-30ms)
+            {"type": "pointerDown", "button": 0},
+            {"type": "pause", "duration": random.randint(15, 30)},
+        ]
+
+        # Add movement along Bézier points
+        for (px, py), step_dur in zip(points[1:], durations):
+            actions_list.append({
+                "type": "pointerMove",
+                "duration": step_dur,
+                "x": int(px),
+                "y": int(py),
+            })
+
+        # Finger lift off
+        actions_list.append({"type": "pointerUp", "button": 0})
+
+        action_seq = [
+            {
+                "type": "pointer",
+                "id": "finger1",
+                "parameters": {"pointerType": "touch"},
+                "actions": actions_list,
+            }
+        ]
+
+        return self.client.perform_w3c_actions(action_seq)
+
+    def swipe_previous_video(self) -> bool:
+        """Performs an organic downward swipe to return to the previous video."""
+        w, h = self.screen_width, self.screen_height
+        dur = random.randint(320, 460)
+
+        start_x = w * 0.52 + random.uniform(-20, 20)
+        start_y = h * random.uniform(0.24, 0.32)
+        end_x = start_x + random.uniform(-25, 25)
+        end_y = h * random.uniform(0.72, 0.80)
+
+        p0 = (start_x, start_y)
+        p1 = (start_x + random.uniform(-15, 15), start_y + (end_y - start_y) * 0.3)
+        p2 = (end_x + random.uniform(-15, 15), start_y + (end_y - start_y) * 0.7)
+        p3 = (end_x, end_y)
+
+        steps = 24
+        points = self._generate_bezier_curve(p0, p1, p2, p3, steps=steps)
+        durations = self._compute_velocity_durations(steps, dur)
+
+        actions_list: List[Dict[str, Any]] = [
+            {"type": "pointerMove", "duration": 0, "x": int(points[0][0]), "y": int(points[0][1])},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pause", "duration": random.randint(18, 35)},
+        ]
+        for (px, py), step_dur in zip(points[1:], durations):
+            actions_list.append({
+                "type": "pointerMove",
+                "duration": step_dur,
+                "x": int(px),
+                "y": int(py),
+            })
+        actions_list.append({"type": "pointerUp", "button": 0})
+
+        action_seq = [
+            {
+                "type": "pointer",
+                "id": "finger1",
+                "parameters": {"pointerType": "touch"},
+                "actions": actions_list,
+            }
+        ]
+        return self.client.perform_w3c_actions(action_seq)
+
+    def micro_flick(self) -> bool:
+        """Simulates an accidental small thumb twitch or partial scroll."""
+        w, h = self.screen_width, self.screen_height
+        start_x = w * 0.5 + random.uniform(-30, 30)
+        start_y = h * 0.6 + random.uniform(-20, 20)
+        end_x = start_x + random.uniform(-10, 10)
+        end_y = start_y - random.uniform(40, 75)
+
+        return self.client.perform_w3c_actions([
+            {
+                "type": "pointer",
+                "id": "finger1",
+                "parameters": {"pointerType": "touch"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "x": int(start_x), "y": int(start_y)},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerMove", "duration": 110, "x": int(end_x), "y": int(end_y)},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            }
+        ])
+
+    def double_tap_like(self) -> bool:
+        """Double taps center-right of the video screen to send a like."""
+        w, h = self.screen_width, self.screen_height
+        # Target middle area of the video
+        target_x = w * random.uniform(0.42, 0.58)
+        target_y = h * random.uniform(0.42, 0.54)
+        gap = random.randint(100, 150)
+        return self.client.double_tap(target_x, target_y, gap_ms=gap)
+
+    def tap_heart_icon(self) -> bool:
+        """Taps the TikTok right-hand sidebar heart icon directly."""
+        w, h = self.screen_width, self.screen_height
+        # Right action sidebar heart icon is typically at ~92% width, ~48-52% height
+        heart_x = w * random.uniform(0.89, 0.94)
+        heart_y = h * random.uniform(0.48, 0.53)
+        return self.client.tap(heart_x, heart_y, dwell_ms=random.randint(45, 75))
+
+    def tap_bookmark_icon(self) -> bool:
+        """Taps the TikTok right-hand sidebar bookmark / favorite icon."""
+        w, h = self.screen_width, self.screen_height
+        # Bookmark icon is typically below comments, around ~64-68% height
+        bm_x = w * random.uniform(0.89, 0.94)
+        bm_y = h * random.uniform(0.63, 0.68)
+        return self.client.tap(bm_x, bm_y, dwell_ms=random.randint(45, 75))
+
+    def tap_comments_icon(self) -> bool:
+        """Taps the TikTok comment icon to open comment drawer."""
+        w, h = self.screen_width, self.screen_height
+        # Comment icon is below heart, around ~55-59% height
+        comm_x = w * random.uniform(0.89, 0.94)
+        comm_y = h * random.uniform(0.55, 0.60)
+        return self.client.tap(comm_x, comm_y, dwell_ms=random.randint(45, 75))
+
+    def close_comments_drawer(self) -> bool:
+        """Closes the comment drawer by tapping top-right X or tapping top dimmed background."""
+        w, h = self.screen_width, self.screen_height
+        # Tap the top dimmed portion of the screen (around 15-22% height)
+        tap_x = w * random.uniform(0.45, 0.55)
+        tap_y = h * random.uniform(0.15, 0.22)
+        return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(50, 80))
