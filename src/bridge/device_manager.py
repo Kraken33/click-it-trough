@@ -49,6 +49,30 @@ class DeviceManager:
             logger.debug(f"USB discovery via pymobiledevice3 failed: {e}")
         return devices
 
+    def discover_tunnel_url(self) -> Optional[str]:
+        """Discovers iOS 17/18+ CoreDevice tunnel IP directly."""
+        try:
+            import json, subprocess, sys
+            pm3 = ".venv/bin/pymobiledevice3"
+            res = subprocess.run(
+                [pm3, "remote", "browse"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                devices = json.loads(res.stdout)
+                for dev in devices:
+                    tunnel_ip = dev.get("tunnelDeviceAddress")
+                    if tunnel_ip:
+                        candidate_url = f"http://[{tunnel_ip}]:8100"
+                        test_client = WDAClient(base_url=candidate_url, timeout=2.0)
+                        if test_client.is_alive():
+                            return candidate_url
+        except Exception as e:
+            logger.debug(f"Tunnel auto-discovery error: {e}")
+        return None
+
     def check_connection(self) -> Dict[str, Any]:
         """
         Tests connection to WDA and fetches device information.
@@ -56,6 +80,13 @@ class DeviceManager:
         """
         usb_devices = self.list_usb_devices()
         is_wda_alive = self.client.is_alive()
+
+        if not is_wda_alive:
+            tunnel_url = self.discover_tunnel_url()
+            if tunnel_url:
+                self.wda_url = tunnel_url
+                self.client = WDAClient(base_url=tunnel_url)
+                is_wda_alive = True
 
         status_info: Dict[str, Any] = {
             "connected": is_wda_alive,
