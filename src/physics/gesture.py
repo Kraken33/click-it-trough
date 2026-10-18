@@ -93,29 +93,35 @@ class BiometricGestureEngine:
     ) -> bool:
         """
         Performs an organic upward swipe to transition to the next TikTok video.
-        Follows a natural thumb arc pivoted from the lower screen corner.
+        Uses a safe horizontal corridor (70%-78% width for right-handed, 24%-32% for left-handed)
+        to completely avoid center carousel pagination dots (35%-65%) and right action sidebar buttons (>86%).
         """
         hand = (handedness or self.handedness).lower()
-        dur = duration_ms or random.randint(140, 210)
 
         # Screen dimensions
         w, h = self.screen_width, self.screen_height
 
         dur = (duration_ms or random.randint(180, 240)) / 1000.0
 
-        # Start position: Center screen, lower-middle area (68% - 72%)
-        start_x = w * random.uniform(0.48, 0.52)
-        start_y = h * random.uniform(0.68, 0.72)
+        # Safe horizontal corridor:
+        # Avoids center carousel dots (35%-65% width) and sidebar icons (86%-100% width)
+        if hand == "left":
+            start_x = w * random.uniform(0.24, 0.32)
+            end_x = start_x + random.uniform(8, 16)
+        else:
+            # Right-hand safe corridor: 70% to 78% width
+            start_x = w * random.uniform(0.70, 0.78)
+            end_x = start_x - random.uniform(8, 16)
 
-        # End position: Upper screen (14% - 18%)
-        # Distance = ~54% of screen height (guarantees crossing the 50% snap threshold)
-        end_x = start_x + (random.uniform(-10, -3) if hand == "right" else random.uniform(3, 10))
+        # Start position: Lower area (64% - 72%)
+        start_y = h * random.uniform(0.64, 0.72)
+        # End position: Upper screen (14% - 18%) - authoritatively crosses 50% snap threshold
         end_y = h * random.uniform(0.14, 0.18)
 
-        # Execute swift native drag across 54% screen distance
+        # Execute swift native drag across screen distance
         success = self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur)
         if not success:
-            return self.client.swipe(direction="up")
+            return self.client.swipe(direction="up", x=start_x, y=start_y)
         return True
 
     def swipe_previous_video(self) -> bool:
@@ -123,22 +129,30 @@ class BiometricGestureEngine:
         w, h = self.screen_width, self.screen_height
         dur = random.randint(180, 240) / 1000.0
 
-        start_x = w * random.uniform(0.48, 0.52)
-        start_y = h * random.uniform(0.16, 0.20)
-        end_x = start_x + random.uniform(-10, 10)
-        end_y = h * random.uniform(0.70, 0.74)
+        hand = self.handedness.lower()
+        if hand == "left":
+            start_x = w * random.uniform(0.24, 0.32)
+            end_x = start_x - random.uniform(8, 16)
+        else:
+            start_x = w * random.uniform(0.70, 0.78)
+            end_x = start_x + random.uniform(8, 16)
+
+        start_y = h * random.uniform(0.16, 0.22)
+        end_y = h * random.uniform(0.70, 0.76)
 
         success = self.client.drag_from_to(start_x, start_y, end_x, end_y, duration_sec=dur)
         if not success:
-            return self.client.swipe(direction="down")
+            return self.client.swipe(direction="down", x=start_x, y=start_y)
         return True
 
     def micro_flick(self) -> bool:
         """Simulates an accidental small thumb twitch or partial scroll."""
         w, h = self.screen_width, self.screen_height
-        start_x = w * 0.5 + random.uniform(-30, 30)
-        start_y = h * 0.6 + random.uniform(-20, 20)
-        end_x = start_x + random.uniform(-10, 10)
+        hand = self.handedness.lower()
+        base_x = w * 0.74 if hand != "left" else w * 0.28
+        start_x = base_x + random.uniform(-15, 15)
+        start_y = h * 0.58 + random.uniform(-20, 20)
+        end_x = start_x + random.uniform(-8, 8)
         end_y = start_y - random.uniform(40, 75)
 
         return self.client.perform_w3c_actions([

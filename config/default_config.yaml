@@ -4,6 +4,10 @@ device:
   reconnect_interval_sec: 5
   screen_width: 393
   screen_height: 852
+vision:
+  enabled: true
+  recognition_level: accurate
+  scan_full_screen: true
 niche:
   seed_search_enabled: true
   seed_terms:
@@ -31,7 +35,6 @@ niche:
   - toprun
   - kukiring4
   - ausomgallop
-  - escooterlife
   - povride
   - pevracing
   - electricmobility
@@ -40,13 +43,11 @@ niche:
   - ausom
   - lonnyo
   - vesc
-  - escooter
   - electricscooter
   - hyperscooter
   - pevlifestyle
   - escooterride
   - scootertok
-  - fyp
   - vescproject
   - diypev
   - diyescooter
@@ -60,34 +61,67 @@ niche:
   - toprun
   - kukiring4
   - ausomgallop
-  - escooterlife
   - povride
   - pevracing
   - electricmobility
-  seed_videos_per_term: 5
+  seed_videos_min: 2
+  seed_videos_max: 5
+  seed_video_dwell_min_sec: 7
+  seed_video_dwell_max_sec: 15
+  seed_videos_per_term: 3
 dwell_time:
-  min_seconds: 3.5
-  max_seconds: 40
-  mean_seconds: 11
+  min_seconds: 4.0
+  max_seconds: 22.0
+  mean_seconds: 11.0
+  niche_match_multiplier_min: 1.8
+  niche_match_multiplier_max: 2.8
   niche_match_multiplier: 2.2
+  ad_skip_min_seconds: 0.8
+  ad_skip_max_seconds: 1.8
   ad_skip_seconds: 1.2
+  live_skip_min_seconds: 0.5
+  live_skip_max_seconds: 1.2
   live_skip_seconds: 0.8
 probabilities:
+  like_base_min: 0.05
+  like_base_max: 0.15
   like_base: 0.1
+  like_niche_min: 0.35
+  like_niche_max: 0.55
   like_niche: 0.4
+  favorite_base_min: 0.01
+  favorite_base_max: 0.04
   favorite_base: 0.03
+  favorite_niche_min: 0.12
+  favorite_niche_max: 0.22
   favorite_niche: 0.16
-  comment_drawer_view_base: 0
-  comment_drawer_view_niche: 0.07
-  rewatch_swipe_back: 0
-  micro_flick: 0
+  comment_drawer_base_min: 0.01
+  comment_drawer_base_max: 0.03
+  comment_drawer_view_base: 0.02
+  comment_drawer_niche_min: 0.06
+  comment_drawer_niche_max: 0.15
+  comment_drawer_view_niche: 0.08
+  comment_read_min_seconds: 3
+  comment_read_max_seconds: 6.5
+  post_action_pause_min_sec: 0.6
+  post_action_pause_max_sec: 1.4
+  post_swipe_pause_min_sec: 0.8
+  post_swipe_pause_max_sec: 1.8
+  double_tap_ratio_min: 0.7
+  double_tap_ratio_max: 0.85
   double_tap_ratio: 0.75
+  rewatch_swipe_back_min: 0.02
+  rewatch_swipe_back_max: 0.06
+  rewatch_swipe_back: 0.03
+  micro_flick_min: 0.01
+  micro_flick_max: 0.05
+  micro_flick: 0.02
 physics:
   handedness: right
   curve_deviation_px: 24
   jitter_intensity_px: 2
-  min_swipe_duration_ms: 280
-  max_swipe_duration_ms: 440
+  min_swipe_duration_ms: 180
+  max_swipe_duration_ms: 280
 safety:
   max_daily_videos: 150
   max_daily_likes: 35

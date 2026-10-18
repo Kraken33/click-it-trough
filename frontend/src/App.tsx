@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Search,
+  Shuffle,
 } from 'lucide-react';
 
 interface SessionStats {
@@ -47,6 +48,135 @@ interface DeviceStatus {
   usb_devices_count: number;
   usb_devices: Array<{ serial: string; udid: string }>;
   screen_size: { width: number; height: number } | null;
+}
+
+function RangeField({
+  label,
+  sublabel,
+  minVal,
+  maxVal,
+  step = 0.1,
+  minLimit = 0,
+  maxLimit = 100,
+  unit = '',
+  isPercent = false,
+  badgeColor = 'pink',
+  onChange,
+}: {
+  label: string;
+  sublabel?: string;
+  minVal: number;
+  maxVal: number;
+  step?: number;
+  minLimit?: number;
+  maxLimit?: number;
+  unit?: string;
+  isPercent?: boolean;
+  badgeColor?: 'pink' | 'purple' | 'cyan' | 'amber' | 'emerald';
+  onChange: (newMin: number, newMax: number) => void;
+}) {
+  const badgeClasses =
+    badgeColor === 'purple'
+      ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+      : badgeColor === 'cyan'
+      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+      : badgeColor === 'amber'
+      ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+      : badgeColor === 'emerald'
+      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+      : 'bg-pink-500/20 text-pink-300 border-pink-500/30';
+
+  const accentColor =
+    badgeColor === 'purple'
+      ? 'accent-purple-500'
+      : badgeColor === 'cyan'
+      ? 'accent-cyan-500'
+      : badgeColor === 'amber'
+      ? 'accent-amber-500'
+      : badgeColor === 'emerald'
+      ? 'accent-emerald-500'
+      : 'accent-pink-500';
+
+  const safeMin = Number(minVal ?? minLimit);
+  const safeMax = Number(maxVal ?? maxLimit);
+
+  return (
+    <div className="p-3 bg-gray-900/60 border border-gray-800 rounded-xl flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <span className="text-xs font-semibold text-gray-200">{label}</span>
+          {sublabel && <p className="text-[11px] text-gray-400 mt-0.5">{sublabel}</p>}
+        </div>
+        <span className={`text-[11px] font-mono font-medium px-2 py-0.5 rounded border ${badgeClasses}`}>
+          {isPercent
+            ? `${Math.round(safeMin * 100)}% – ${Math.round(safeMax * 100)}%`
+            : `${safeMin}${unit} – ${safeMax}${unit}`}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 pt-1">
+        <div className="flex flex-col gap-1">
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Min</span>
+            <input
+              type="number"
+              step={step}
+              min={minLimit}
+              max={safeMax}
+              value={isPercent ? Math.round(safeMin * 100) : safeMin}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                const n = isPercent ? val / 100 : val;
+                onChange(Math.min(n, safeMax), safeMax);
+              }}
+              className="w-14 bg-gray-950 border border-gray-700 text-right text-gray-200 px-1.5 py-0.5 rounded text-xs outline-none focus:border-pink-500"
+            />
+          </div>
+          <input
+            type="range"
+            step={step}
+            min={minLimit}
+            max={maxLimit}
+            value={safeMin}
+            onChange={(e) => {
+              const val = Number(e.target.value);
+              onChange(Math.min(val, safeMax), safeMax);
+            }}
+            className={`${accentColor} w-full cursor-pointer`}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Max</span>
+            <input
+              type="number"
+              step={step}
+              min={safeMin}
+              max={maxLimit}
+              value={isPercent ? Math.round(safeMax * 100) : safeMax}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                const n = isPercent ? val / 100 : val;
+                onChange(safeMin, Math.max(n, safeMin));
+              }}
+              className="w-14 bg-gray-950 border border-gray-700 text-right text-gray-200 px-1.5 py-0.5 rounded text-xs outline-none focus:border-pink-500"
+            />
+          </div>
+          <input
+            type="range"
+            step={step}
+            min={minLimit}
+            max={maxLimit}
+            value={safeMax}
+            onChange={(e) => {
+              const val = Number(e.target.value);
+              onChange(safeMin, Math.max(val, safeMin));
+            }}
+            className={`${accentColor} w-full cursor-pointer`}
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -81,6 +211,8 @@ export default function App() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isSearching, setIsSearching] = useState(false);
   const [activeSearchTerm, setActiveSearchTerm] = useState<string | null>(null);
+  const [isTestingTags, setIsTestingTags] = useState(false);
+  const [tagTestResult, setTagTestResult] = useState<any | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -115,6 +247,8 @@ export default function App() {
                       ? 'like'
                       : payload.data.current_action.includes('Ad')
                       ? 'ad'
+                      : payload.data.current_action.includes('Niche')
+                      ? 'niche'
                       : 'info',
                   },
                   ...logs.slice(0, 50),
@@ -217,8 +351,42 @@ export default function App() {
   };
 
   const handleStop = async () => {
+    setIsSearching(false);
+    setActiveSearchTerm(null);
     await fetch('/api/actions/stop', { method: 'POST' });
     fetchStatus();
+  };
+
+  const handleTestTags = async () => {
+    try {
+      setIsTestingTags(true);
+      const res = await fetch('/api/actions/test-tags', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setTagTestResult(data);
+        if (data.image) {
+          setScreenB64(data.image);
+        }
+        setActivityLogs((logs) => [
+          {
+            time: new Date().toLocaleTimeString(),
+            msg: data.is_niche
+              ? `🎯 Test on Tags: Match [${data.matched_keywords.join(', ')}] (Score: ${data.score})`
+              : `⚠️ Test on Tags: No match detected on screen`,
+            type: data.is_niche ? 'niche' : 'info',
+          },
+          ...logs.slice(0, 50),
+        ]);
+      } else {
+        const err = await res.json().catch(() => ({ detail: 'Device unreachable' }));
+        alert(`Test on Tags failed: ${err.detail || 'Device unreachable'}`);
+      }
+    } catch (e: any) {
+      console.error('Test on tags error', e);
+      alert(`Test on Tags error: ${e.message}`);
+    } finally {
+      setIsTestingTags(false);
+    }
   };
 
   const handleSkip = async () => {
@@ -238,8 +406,8 @@ export default function App() {
     setActiveSearchTerm(term || 'Niche Seeds');
     try {
       const url = term
-        ? `/api/actions/trigger-search?term=${encodeURIComponent(term)}&videos_to_watch=${config?.niche?.seed_videos_per_term || 3}`
-        : `/api/actions/trigger-search?videos_to_watch=${config?.niche?.seed_videos_per_term || 3}`;
+        ? `/api/actions/trigger-search?term=${encodeURIComponent(term)}`
+        : `/api/actions/trigger-search`;
       await fetch(url, { method: 'POST' });
     } catch (e) {
       console.error('Trigger search error', e);
@@ -447,6 +615,24 @@ export default function App() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={handleTestTags}
+              disabled={isTestingTags}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 transition border border-purple-500/30 flex items-center gap-1.5 shadow-sm shadow-purple-500/10"
+              title="Capture current screen and test against niche tags using Apple Vision OCR"
+            >
+              {isTestingTags ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                  Testing...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  Test on Tags
+                </>
+              )}
+            </button>
+            <button
               onClick={handleTestSwipe}
               className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-200 transition border border-gray-700"
               title="Test biometric swipe gesture on iPhone"
@@ -460,6 +646,16 @@ export default function App() {
             >
               Test Like ❤️
             </button>
+            {(stats.state === 'RUNNING' || stats.state === 'PAUSED' || isSearching) && (
+              <button
+                onClick={handleStop}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-600/30 flex items-center gap-1.5 transition animate-pulse"
+                title="Stop current session or search action"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                Stop
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -627,8 +823,12 @@ export default function App() {
 
               <button
                 onClick={handleStop}
-                disabled={stats.state === 'IDLE' || stats.state === 'STOPPED'}
-                className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-xs font-semibold transition disabled:opacity-40"
+                disabled={stats.state !== 'RUNNING' && stats.state !== 'PAUSED' && !isSearching}
+                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-semibold transition ${
+                  stats.state === 'RUNNING' || stats.state === 'PAUSED' || isSearching
+                    ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40 shadow-sm shadow-rose-500/10 cursor-pointer'
+                    : 'bg-gray-800 text-gray-500 border-gray-700 opacity-40 cursor-not-allowed'
+                }`}
               >
                 <Square className="w-3.5 h-3.5 fill-current" /> Stop
               </button>
@@ -653,6 +853,22 @@ export default function App() {
               className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-400 border border-gray-800 text-xs font-medium transition"
             >
               <Smartphone className="w-3.5 h-3.5 text-pink-400" /> Capture Screen Snapshot
+            </button>
+
+            <button
+              onClick={handleTestTags}
+              disabled={isTestingTags}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30 text-xs font-medium transition disabled:opacity-50 shadow-sm shadow-purple-500/10"
+            >
+              {isTestingTags ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-400" /> Analyzing Tags via OCR...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" /> Test Screen on Tags
+                </>
+              )}
             </button>
 
             <button
@@ -778,6 +994,61 @@ export default function App() {
 
             {/* Tab Contents */}
             <div className="flex-1 p-5 overflow-y-auto">
+              {/* Universal Tag Test Result Card (Visible across all tabs) */}
+              {tagTestResult && (
+                <div className={`mb-4 p-4 rounded-xl border flex flex-col gap-2.5 transition ${
+                  tagTestResult.is_niche
+                    ? 'bg-purple-950/40 border-purple-500/50 text-purple-200 shadow-lg shadow-purple-500/10'
+                    : 'bg-gray-900 border-gray-700 text-gray-300'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {tagTestResult.is_niche ? (
+                        <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                      ) : (
+                        <XCircle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+                      )}
+                      <span className="text-xs sm:text-sm font-bold">
+                        {tagTestResult.is_niche
+                          ? `🎯 Niche Match Detected: ${tagTestResult.matched_keywords.join(', ')}`
+                          : '⚠️ No Target Tags Detected on Current Screen'}
+                      </span>
+                      {tagTestResult.is_niche && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/25 text-purple-300 border border-purple-500/30 font-medium">
+                          Score: {tagTestResult.score} / 1.0 ({tagTestResult.matched_in || 'text'})
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setTagTestResult(null)}
+                      className="text-gray-400 hover:text-white text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 transition"
+                    >
+                      Dismiss ✕
+                    </button>
+                  </div>
+
+                  {tagTestResult.is_niche ? (
+                    <div className="text-xs text-gray-300 flex flex-wrap gap-x-5 gap-y-1.5 pt-1">
+                      <span>⚡ <strong>Dwell Multiplier:</strong> {config?.dwell_time?.niche_match_multiplier_min ? `${config.dwell_time.niche_match_multiplier_min}x – ${config.dwell_time.niche_match_multiplier_max}x` : '1.8x – 2.8x'}</span>
+                      <span>❤️ <strong>Like Chance:</strong> {Math.round((config?.probabilities?.like_niche_min ?? 0.35) * 100)}% – {Math.round((config?.probabilities?.like_niche_max ?? 0.55) * 100)}%</span>
+                      <span>⭐ <strong>Favorite:</strong> {Math.round((config?.probabilities?.favorite_niche_min ?? 0.12) * 100)}% – {Math.round((config?.probabilities?.favorite_niche_max ?? 0.22) * 100)}%</span>
+                      <span>📢 <strong>Sponsored/Ad:</strong> {tagTestResult.is_ad ? 'Yes (skipped)' : 'No (organic)'}</span>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-gray-400">
+                      The on-screen text did not match any of your {(config?.niche?.target_keywords || []).length} keywords.
+                    </div>
+                  )}
+
+                  {(tagTestResult.caption || tagTestResult.full_text) && (
+                    <div className="mt-1 p-2.5 rounded-lg bg-black/50 border border-white/5 text-[11px] font-mono text-gray-300 max-h-24 overflow-y-auto">
+                      <span className="text-gray-500 block text-[9px] uppercase tracking-wider mb-1">OCR Detected Text on Screen:</span>
+                      {tagTestResult.caption || tagTestResult.full_text}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Activity Log Tab */}
               {activeTab === 'activity' && (
                 <div className="flex flex-col h-full">
@@ -797,6 +1068,8 @@ export default function App() {
                               ? 'bg-pink-500/10 border-pink-500/20 text-pink-300'
                               : log.type === 'ad'
                               ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                              : log.type === 'niche'
+                              ? 'bg-purple-500/15 border-purple-500/30 text-purple-300 font-medium'
                               : 'bg-gray-900 border-gray-800 text-gray-300'
                           }`}
                         >
@@ -812,20 +1085,70 @@ export default function App() {
               {/* Niche Targeting Tab */}
               {activeTab === 'niche' && config && (
                 <div className="space-y-5">
+                  {/* Apple Vision OCR Toggle Card */}
+                  <div className="p-3 rounded-xl bg-gray-900/80 border border-gray-800 flex items-center justify-between">
+                    <div className="flex flex-col pr-4">
+                      <span className="text-xs text-gray-200 font-semibold flex items-center gap-1.5">
+                        Apple Vision OCR Detection
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">macOS Native</span>
+                      </span>
+                      <span className="text-[11px] text-gray-400 mt-0.5">
+                        Scans on-screen text, captions & stickers to detect niche matches and multiply dwell time.
+                      </span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={config.vision?.enabled ?? true}
+                        onChange={(e) => {
+                          const updated = {
+                            ...config,
+                            vision: { ...config.vision, enabled: e.target.checked },
+                          };
+                          setConfig(updated);
+                          handleSaveConfig(updated);
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-pink-600"></div>
+                    </label>
+                  </div>
+
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-xs font-semibold text-gray-300">
                         Target Niche Keywords (OCR matches in captions boost dwell & like rates)
                       </label>
-                      {(config.niche?.target_keywords || []).length > 0 && (
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={clearAllKeywords}
-                          className="text-[11px] text-gray-500 hover:text-red-400 transition"
+                          onClick={handleTestTags}
+                          disabled={isTestingTags}
+                          className="px-2.5 py-1 bg-purple-600/25 hover:bg-purple-600/35 text-purple-300 border border-purple-500/40 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm shadow-purple-500/10 cursor-pointer"
+                          title="Capture current screen and test against niche tags using Apple Vision OCR"
                         >
-                          Clear all ({(config.niche?.target_keywords || []).length})
+                          {isTestingTags ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin text-purple-400" />
+                              Testing Screen...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3 h-3 text-purple-400" />
+                              Test on Tags
+                            </>
+                          )}
                         </button>
-                      )}
+                        {(config.niche?.target_keywords || []).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={clearAllKeywords}
+                            className="text-[11px] text-gray-500 hover:text-red-400 transition"
+                          >
+                            Clear all ({(config.niche?.target_keywords || []).length})
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex gap-2 mb-2">
                       <input
@@ -862,6 +1185,61 @@ export default function App() {
                         </span>
                       ))}
                     </div>
+
+                    {/* Tag Test Result Card */}
+                    {tagTestResult && (
+                      <div className={`mt-3 p-3.5 rounded-xl border flex flex-col gap-2 transition ${
+                        tagTestResult.is_niche
+                          ? 'bg-purple-950/30 border-purple-500/40 text-purple-200 shadow-md shadow-purple-500/10'
+                          : 'bg-gray-900 border-gray-700 text-gray-300'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            {tagTestResult.is_niche ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                            ) : (
+                              <XCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                            )}
+                            <span className="text-xs font-bold">
+                              {tagTestResult.is_niche
+                                ? `Niche Match Detected: ${tagTestResult.matched_keywords.join(', ')}`
+                                : 'No Target Tags Detected on Screen'}
+                            </span>
+                            {tagTestResult.is_niche && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-medium">
+                                Score: {tagTestResult.score} / 1.0 ({tagTestResult.matched_in || 'text'})
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => setTagTestResult(null)}
+                            className="text-gray-400 hover:text-white text-xs px-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        {tagTestResult.is_niche ? (
+                          <div className="text-[11px] text-gray-300 flex flex-wrap gap-x-4 gap-y-1">
+                            <span>🎯 <strong>Dwell Multiplier:</strong> {config.dwell_time?.niche_match_multiplier_min ? `${config.dwell_time.niche_match_multiplier_min}x – ${config.dwell_time.niche_match_multiplier_max}x` : '1.8x – 2.8x'} boost</span>
+                            <span>❤️ <strong>Like Chance:</strong> {Math.round((config?.probabilities?.like_niche_min ?? 0.35) * 100)}% – {Math.round((config?.probabilities?.like_niche_max ?? 0.55) * 100)}%</span>
+                            <span>⭐ <strong>Favorite:</strong> {Math.round((config?.probabilities?.favorite_niche_min ?? 0.12) * 100)}% – {Math.round((config?.probabilities?.favorite_niche_max ?? 0.22) * 100)}%</span>
+                            <span>📢 <strong>Sponsored/Ad:</strong> {tagTestResult.is_ad ? 'Yes (skipped)' : 'No (organic)'}</span>
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-gray-400">
+                            The on-screen text did not contain any of your {(config.niche?.target_keywords || []).length} keywords.
+                          </div>
+                        )}
+
+                        {(tagTestResult.caption || tagTestResult.full_text) && (
+                          <div className="mt-1 p-2 rounded-lg bg-black/40 border border-white/5 text-[10px] font-mono text-gray-300 max-h-20 overflow-y-auto">
+                            <span className="text-gray-500 block text-[9px] uppercase tracking-wider mb-0.5">OCR Detected Text:</span>
+                            {tagTestResult.caption || tagTestResult.full_text}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="border-t border-gray-800 pt-4">
@@ -948,39 +1326,124 @@ export default function App() {
                           <input
                             type="number"
                             min={1}
-                            max={10}
-                            value={config.niche?.seed_videos_per_term || 3}
+                            max={config.niche?.seed_videos_max || 8}
+                            value={config.niche?.seed_videos_min ?? 2}
                             onChange={(e) => {
                               const updated = {
                                 ...config,
-                                niche: { ...config.niche, seed_videos_per_term: Number(e.target.value) },
+                                niche: {
+                                  ...config.niche,
+                                  seed_videos_min: Number(e.target.value),
+                                  seed_videos_per_term: Number(e.target.value),
+                                },
                               };
                               setConfig(updated);
                               handleSaveConfig(updated);
                             }}
-                            className="w-12 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1.5 py-0.5 text-center outline-none focus:border-pink-500"
+                            className="w-11 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                          <span>–</span>
+                          <input
+                            type="number"
+                            min={config.niche?.seed_videos_min || 1}
+                            max={12}
+                            value={config.niche?.seed_videos_max ?? 5}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: {
+                                  ...config.niche,
+                                  seed_videos_max: Number(e.target.value),
+                                },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-11 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
                           />
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => handleTriggerSearch()}
-                        disabled={isSearching || (config.niche?.seed_terms || []).length === 0}
-                        className="w-full py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/10"
-                      >
-                        {isSearching ? (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            Seeding Search ({activeSearchTerm || 'Niche'})...
-                          </>
-                        ) : (
-                          <>
-                            <Search className="w-3.5 h-3.5" />
-                            Trigger Niche Search Seeding Now
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center justify-between text-[11px] text-gray-400 pt-1 border-t border-gray-800/60">
+                        <span>Seed Video Attention Dwell:</span>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            step={0.5}
+                            min={3}
+                            max={config.niche?.seed_video_dwell_max_sec || 20}
+                            value={config.niche?.seed_video_dwell_min_sec ?? 7.0}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: {
+                                  ...config.niche,
+                                  seed_video_dwell_min_sec: Number(e.target.value),
+                                },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-12 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                          <span>s –</span>
+                          <input
+                            type="number"
+                            step={0.5}
+                            min={config.niche?.seed_video_dwell_min_sec || 5}
+                            max={35}
+                            value={config.niche?.seed_video_dwell_max_sec ?? 15.0}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: {
+                                  ...config.niche,
+                                  seed_video_dwell_max_sec: Number(e.target.value),
+                                },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-12 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                          <span>s</span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerSearch()}
+                          disabled={isSearching || (config.niche?.seed_terms || []).length === 0}
+                          className="flex-1 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/10 cursor-pointer"
+                        >
+                          {isSearching ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Seeding ({activeSearchTerm || 'Niche'})...
+                            </>
+                          ) : (
+                            <>
+                              <Search className="w-3.5 h-3.5" />
+                              Trigger Niche Search Seeding
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleStop}
+                          disabled={!isSearching && stats.state !== 'RUNNING' && stats.state !== 'PAUSED'}
+                          className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 border ${
+                            isSearching || stats.state === 'RUNNING' || stats.state === 'PAUSED'
+                              ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40 shadow-sm shadow-rose-500/10 cursor-pointer'
+                              : 'bg-gray-800 text-gray-500 border-gray-700 opacity-40 cursor-not-allowed'
+                          }`}
+                          title="Stop active search seeding or session"
+                        >
+                          <Square className="w-3.5 h-3.5 fill-current" /> Stop
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -1009,129 +1472,429 @@ export default function App() {
 
               {/* Behavior & Probabilities Tab */}
               {activeTab === 'behavior' && config && (
-                <div className="space-y-4 text-xs">
+                <div className="space-y-5 text-xs">
+                  {/* Header info */}
+                  <div className="p-3 rounded-xl bg-gray-900/80 border border-gray-800 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs text-gray-200 font-semibold flex items-center gap-1.5">
+                        <Shuffle className="w-3.5 h-3.5 text-pink-400" /> Human Attention & Action Randomization
+                      </span>
+                      <p className="text-[11px] text-gray-400 mt-0.5">
+                        All values are configured as random ranges [Min, Max] sampled continuously to evade bot pattern detection.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 1. Dwell Times */}
                   <div>
-                    <div className="flex justify-between mb-1">
-                      <span className="text-gray-300">Mean Dwell Time: {config.dwell_time.mean_seconds}s</span>
-                      <span className="text-gray-500">Range: {config.dwell_time.min_seconds}s - {config.dwell_time.max_seconds}s</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={6}
-                      max={25}
-                      step={1}
-                      value={config.dwell_time.mean_seconds}
-                      onChange={(e) =>
-                        setConfig({
-                          ...config,
-                          dwell_time: { ...config.dwell_time, mean_seconds: Number(e.target.value) },
-                        })
-                      }
-                      className="w-full accent-pink-500"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between mb-1">
-                      <span className="text-gray-300">Niche Dwell Multiplier: {config.dwell_time.niche_match_multiplier}x</span>
-                      <span className="text-gray-500">Watches longer if tags match</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={1.2}
-                      max={3.0}
-                      step={0.1}
-                      value={config.dwell_time.niche_match_multiplier}
-                      onChange={(e) =>
-                        setConfig({
-                          ...config,
-                          dwell_time: { ...config.dwell_time, niche_match_multiplier: Number(e.target.value) },
-                        })
-                      }
-                      className="w-full accent-pink-500"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 border-t border-gray-800 pt-3">
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-300">Like (Base): {Math.round(config.probabilities.like_base * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.02}
-                        max={0.25}
-                        step={0.01}
-                        value={config.probabilities.like_base}
-                        onChange={(e) =>
-                          setConfig({
+                    <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-pink-400" /> Dwell Times & Attention Curve
+                    </h4>
+                    <div className="space-y-3">
+                      <RangeField
+                        label="FYP Normal Video Dwell Range"
+                        sublabel="Natural log-normal curve bounding video attention span"
+                        minVal={config.dwell_time?.min_seconds ?? 3.5}
+                        maxVal={config.dwell_time?.max_seconds ?? 35.0}
+                        step={0.5}
+                        minLimit={1}
+                        maxLimit={60}
+                        unit="s"
+                        badgeColor="pink"
+                        onChange={(min, max) => {
+                          const updated = {
                             ...config,
-                            probabilities: { ...config.probabilities, like_base: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-pink-500"
+                            dwell_time: {
+                              ...config.dwell_time,
+                              min_seconds: min,
+                              max_seconds: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <div className="p-3 bg-gray-900/60 border border-gray-800 rounded-xl flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-semibold text-gray-200">Log-Normal Mean Dwell</span>
+                          <p className="text-[11px] text-gray-400 mt-0.5">Peak distribution center within the min-max bounds</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min={config.dwell_time?.min_seconds ?? 4}
+                            max={config.dwell_time?.max_seconds ?? 30}
+                            step={0.5}
+                            value={config.dwell_time?.mean_seconds ?? 11.0}
+                            onChange={(e) => {
+                              setConfig({
+                                ...config,
+                                dwell_time: { ...config.dwell_time, mean_seconds: Number(e.target.value) },
+                              });
+                            }}
+                            className="accent-pink-500 w-28 cursor-pointer"
+                          />
+                          <span className="text-xs font-mono font-medium text-pink-300 w-12 text-right">
+                            {config.dwell_time?.mean_seconds ?? 11.0}s
+                          </span>
+                        </div>
+                      </div>
+
+                      <RangeField
+                        label="Niche Match Dwell Multiplier"
+                        sublabel="Multiplier range applied when target tags are detected on screen"
+                        minVal={config.dwell_time?.niche_match_multiplier_min ?? 1.8}
+                        maxVal={config.dwell_time?.niche_match_multiplier_max ?? 2.8}
+                        step={0.1}
+                        minLimit={1.0}
+                        maxLimit={4.0}
+                        unit="x"
+                        badgeColor="purple"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            dwell_time: {
+                              ...config.dwell_time,
+                              niche_match_multiplier_min: min,
+                              niche_match_multiplier_max: max,
+                              niche_match_multiplier: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Ad & Sponsored Fast-Skip Dwell"
+                        sublabel="Time before swiftly skipping detected commercial posts"
+                        minVal={config.dwell_time?.ad_skip_min_seconds ?? 0.8}
+                        maxVal={config.dwell_time?.ad_skip_max_seconds ?? 1.8}
+                        step={0.1}
+                        minLimit={0.3}
+                        maxLimit={4.0}
+                        unit="s"
+                        badgeColor="emerald"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            dwell_time: {
+                              ...config.dwell_time,
+                              ad_skip_min_seconds: min,
+                              ad_skip_max_seconds: max,
+                              ad_skip_seconds: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
                       />
                     </div>
+                  </div>
 
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-pink-400 font-semibold">Like (Niche): {Math.round(config.probabilities.like_niche * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.2}
-                        max={0.8}
-                        step={0.02}
-                        value={config.probabilities.like_niche}
-                        onChange={(e) =>
-                          setConfig({
+                  {/* 2. Interaction Probabilities */}
+                  <div className="border-t border-gray-800 pt-4">
+                    <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <Heart className="w-3.5 h-3.5 text-rose-400" /> Like & Favorite Rates
+                    </h4>
+                    <div className="space-y-3">
+                      <RangeField
+                        label="Base Like Probability"
+                        sublabel="Organic like rate for standard non-niche FYP videos"
+                        minVal={config.probabilities?.like_base_min ?? 0.05}
+                        maxVal={config.probabilities?.like_base_max ?? 0.15}
+                        step={0.01}
+                        minLimit={0}
+                        maxLimit={0.5}
+                        isPercent={true}
+                        badgeColor="pink"
+                        onChange={(min, max) => {
+                          const updated = {
                             ...config,
-                            probabilities: { ...config.probabilities, like_niche: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-pink-500"
+                            probabilities: {
+                              ...config.probabilities,
+                              like_base_min: min,
+                              like_base_max: max,
+                              like_base: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Niche Like Probability"
+                        sublabel="High organic like rate when niche tags or topics match"
+                        minVal={config.probabilities?.like_niche_min ?? 0.35}
+                        maxVal={config.probabilities?.like_niche_max ?? 0.55}
+                        step={0.01}
+                        minLimit={0.1}
+                        maxLimit={0.9}
+                        isPercent={true}
+                        badgeColor="pink"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              like_niche_min: min,
+                              like_niche_max: max,
+                              like_niche: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Double-Tap vs Heart Icon Ratio"
+                        sublabel="Percentage of likes executed via screen double-tap vs side heart icon"
+                        minVal={config.probabilities?.double_tap_ratio_min ?? 0.70}
+                        maxVal={config.probabilities?.double_tap_ratio_max ?? 0.85}
+                        step={0.01}
+                        minLimit={0.2}
+                        maxLimit={1.0}
+                        isPercent={true}
+                        badgeColor="pink"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              double_tap_ratio_min: min,
+                              double_tap_ratio_max: max,
+                              double_tap_ratio: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Base Favorite / Bookmark Chance"
+                        sublabel="Occasional bookmarking of non-niche viral content"
+                        minVal={config.probabilities?.favorite_base_min ?? 0.01}
+                        maxVal={config.probabilities?.favorite_base_max ?? 0.04}
+                        step={0.005}
+                        minLimit={0}
+                        maxLimit={0.2}
+                        isPercent={true}
+                        badgeColor="amber"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              favorite_base_min: min,
+                              favorite_base_max: max,
+                              favorite_base: Number(((min + max) / 2).toFixed(3)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Niche Favorite / Bookmark Chance"
+                        sublabel="Intentional bookmarking rate for matched niche videos"
+                        minVal={config.probabilities?.favorite_niche_min ?? 0.12}
+                        maxVal={config.probabilities?.favorite_niche_max ?? 0.22}
+                        step={0.01}
+                        minLimit={0.02}
+                        maxLimit={0.6}
+                        isPercent={true}
+                        badgeColor="amber"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              favorite_niche_min: min,
+                              favorite_niche_max: max,
+                              favorite_niche: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-300">Favorite (Niche): {Math.round(config.probabilities.favorite_niche * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.05}
-                        max={0.35}
-                        step={0.01}
-                        value={config.probabilities.favorite_niche}
-                        onChange={(e) =>
-                          setConfig({
+                  {/* 3. Comments Drawer & Inspection */}
+                  <div className="border-t border-gray-800 pt-4">
+                    <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <MessageCircle className="w-3.5 h-3.5 text-purple-400" /> Comment Drawer Inspection
+                    </h4>
+                    <div className="space-y-3">
+                      <RangeField
+                        label="Base Comment Drawer Open Chance"
+                        sublabel="Rate of opening comment sheet on random videos"
+                        minVal={config.probabilities?.comment_drawer_base_min ?? 0.01}
+                        maxVal={config.probabilities?.comment_drawer_base_max ?? 0.03}
+                        step={0.005}
+                        minLimit={0}
+                        maxLimit={0.15}
+                        isPercent={true}
+                        badgeColor="purple"
+                        onChange={(min, max) => {
+                          const updated = {
                             ...config,
-                            probabilities: { ...config.probabilities, favorite_niche: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-amber-500"
+                            probabilities: {
+                              ...config.probabilities,
+                              comment_drawer_base_min: min,
+                              comment_drawer_base_max: max,
+                              comment_drawer_view_base: Number(((min + max) / 2).toFixed(3)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Niche Comment Drawer Open Chance"
+                        sublabel="Rate of opening comment sheet on matched niche videos"
+                        minVal={config.probabilities?.comment_drawer_niche_min ?? 0.06}
+                        maxVal={config.probabilities?.comment_drawer_niche_max ?? 0.15}
+                        step={0.01}
+                        minLimit={0.02}
+                        maxLimit={0.4}
+                        isPercent={true}
+                        badgeColor="purple"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              comment_drawer_niche_min: min,
+                              comment_drawer_niche_max: max,
+                              comment_drawer_view_niche: Number(((min + max) / 2).toFixed(2)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Comments Read Duration Range"
+                        sublabel="Time spent reading comments before closing the drawer"
+                        minVal={config.probabilities?.comment_read_min_seconds ?? 3.0}
+                        maxVal={config.probabilities?.comment_read_max_seconds ?? 6.5}
+                        step={0.5}
+                        minLimit={1.0}
+                        maxLimit={15.0}
+                        unit="s"
+                        badgeColor="purple"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              comment_read_min_seconds: min,
+                              comment_read_max_seconds: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
                       />
                     </div>
+                  </div>
 
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-300">Read Comments: {Math.round(config.probabilities.comment_drawer_view_niche * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.05}
-                        max={0.4}
-                        step={0.01}
-                        value={config.probabilities.comment_drawer_view_niche}
-                        onChange={(e) =>
-                          setConfig({
+                  {/* 4. Natural Pauses & Biometric Gestures */}
+                  <div className="border-t border-gray-800 pt-4">
+                    <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-cyan-400" /> Natural Pauses & Biometrics
+                    </h4>
+                    <div className="space-y-3">
+                      <RangeField
+                        label="Post-Action Pause Duration"
+                        sublabel="Natural pause after liking, bookmarking, or closing drawer"
+                        minVal={config.probabilities?.post_action_pause_min_sec ?? 0.6}
+                        maxVal={config.probabilities?.post_action_pause_max_sec ?? 1.4}
+                        step={0.1}
+                        minLimit={0.2}
+                        maxLimit={3.0}
+                        unit="s"
+                        badgeColor="cyan"
+                        onChange={(min, max) => {
+                          const updated = {
                             ...config,
-                            probabilities: { ...config.probabilities, comment_drawer_view_niche: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full accent-purple-500"
+                            probabilities: {
+                              ...config.probabilities,
+                              post_action_pause_min_sec: min,
+                              post_action_pause_max_sec: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Post-Swipe Stabilization Pause"
+                        sublabel="Eye adjustment and video rendering pause immediately after swipe"
+                        minVal={config.probabilities?.post_swipe_pause_min_sec ?? 0.8}
+                        maxVal={config.probabilities?.post_swipe_pause_max_sec ?? 1.8}
+                        step={0.1}
+                        minLimit={0.3}
+                        maxLimit={4.0}
+                        unit="s"
+                        badgeColor="cyan"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              post_swipe_pause_min_sec: min,
+                              post_swipe_pause_max_sec: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Rewatch Swipe-Back Chance"
+                        sublabel="Occasional downward swipe to rewatch previous video"
+                        minVal={config.probabilities?.rewatch_swipe_back_min ?? 0.02}
+                        maxVal={config.probabilities?.rewatch_swipe_back_max ?? 0.06}
+                        step={0.005}
+                        minLimit={0}
+                        maxLimit={0.15}
+                        isPercent={true}
+                        badgeColor="cyan"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              rewatch_swipe_back_min: min,
+                              rewatch_swipe_back_max: max,
+                              rewatch_swipe_back: Number(((min + max) / 2).toFixed(3)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Micro-Flick Gesture Chance"
+                        sublabel="Subtle biometric touch twitch mimicking hand grip adjustment"
+                        minVal={config.probabilities?.micro_flick_min ?? 0.01}
+                        maxVal={config.probabilities?.micro_flick_max ?? 0.05}
+                        step={0.005}
+                        minLimit={0}
+                        maxLimit={0.15}
+                        isPercent={true}
+                        badgeColor="cyan"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            probabilities: {
+                              ...config.probabilities,
+                              micro_flick_min: min,
+                              micro_flick_max: max,
+                              micro_flick: Number(((min + max) / 2).toFixed(3)),
+                            },
+                          };
+                          setConfig(updated);
+                        }}
                       />
                     </div>
                   </div>
@@ -1139,7 +1902,7 @@ export default function App() {
                   <button
                     onClick={() => handleSaveConfig()}
                     disabled={isSavingConfig}
-                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition mt-2 disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="w-full py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-xl text-xs font-semibold hover:opacity-90 transition mt-3 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-pink-500/20"
                   >
                     {saveStatus === 'saving' ? (
                       <>
@@ -1150,9 +1913,12 @@ export default function App() {
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" /> Saved to default_config.yaml!
                       </>
                     ) : (
-                      'Apply Probability Settings'
+                      'Apply & Save Randomized Ranges'
                     )}
                   </button>
+                  <p className="text-[11px] text-gray-500 text-center">
+                    All randomized ranges will be stored in config/default_config.yaml and take effect immediately.
+                  </p>
                 </div>
               )}
 

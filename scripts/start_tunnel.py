@@ -37,6 +37,27 @@ def get_ios17_tunnel_ip() -> Optional[Tuple[str, str, str]]:
             return None
 
         devices = json.loads(res.stdout)
+        # Prioritize physically connected USB devices over wireless/remote devices
+        devices.sort(
+            key=lambda d: bool(d.get("connectionState", {}).get("value", {}).get("attachedPhysically", False)),
+            reverse=True,
+        )
+
+        for dev in devices:
+            tunnel_ip = dev.get("tunnelDeviceAddress")
+            if tunnel_ip:
+                # Fast TCP check to ensure WDA is actually alive on this IP
+                try:
+                    s = socket.create_connection((tunnel_ip, 8100), timeout=1.5)
+                    s.close()
+                except Exception:
+                    continue
+
+                name = dev.get("name", "iPhone")
+                udid = dev.get("udid", "unknown")
+                return name, udid, tunnel_ip
+
+        # Fallback if port check didn't pass: return first device with an IP
         for dev in devices:
             tunnel_ip = dev.get("tunnelDeviceAddress")
             if tunnel_ip:

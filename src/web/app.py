@@ -183,7 +183,7 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
         return {"status": "ok" if success else "failed"}
 
     @app.post("/api/actions/trigger-search")
-    def action_trigger_search(term: Optional[str] = None, videos_to_watch: int = 3):
+    def action_trigger_search(term: Optional[str] = None, videos_to_watch: Optional[int] = None):
         """Triggers TikTok search seeding on device to narrow down FYP algorithm to target niche."""
         query = term
         if not query:
@@ -198,7 +198,43 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
-        return {"status": "started", "term": query, "videos_to_watch": videos_to_watch}
+        return {"status": "started", "term": query, "videos_to_watch": videos_to_watch or "randomized"}
+
+    @app.api_route("/api/actions/test-tags", methods=["GET", "POST"])
+    def action_test_tags():
+        """Captures the current screen and runs Vision OCR & NicheTrainer against configured target tags."""
+        img = device_manager.get_screen()
+        if not img:
+            raise HTTPException(status_code=503, detail="Unable to capture screen from device")
+
+        caption, full_text = runner.ocr.extract_full_content(img)
+        is_ad = runner.detector.is_sponsored(caption) or runner.detector.is_sponsored(full_text)
+
+        score, matched_kws = runner.trainer.evaluate_relevance(caption)
+        matched_in = "caption" if matched_kws else ""
+        if not matched_kws and full_text:
+            score, matched_kws = runner.trainer.evaluate_relevance(full_text)
+            if matched_kws:
+                matched_in = "video overlay / screen"
+
+        is_niche = len(matched_kws) > 0
+
+        buf = io.BytesIO()
+        rgb_img = img.convert("RGB") if img.mode != "RGB" else img
+        rgb_img.save(buf, format="JPEG", quality=75)
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        return {
+            "status": "ok",
+            "is_niche": is_niche,
+            "matched_keywords": matched_kws,
+            "matched_in": matched_in,
+            "score": round(score, 2),
+            "is_ad": is_ad,
+            "caption": caption,
+            "full_text": full_text[:400],
+            "image": f"data:image/jpeg;base64,{img_b64}",
+        }
 
     @app.get("/api/screen")
     def get_screen_raw():
@@ -206,7 +242,8 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
         if not img:
             raise HTTPException(status_code=503, detail="Screen unavailable")
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
+        rgb_img = img.convert("RGB") if img.mode != "RGB" else img
+        rgb_img.save(buf, format="JPEG", quality=80)
         return Response(content=buf.getvalue(), media_type="image/jpeg")
 
     @app.websocket("/ws")

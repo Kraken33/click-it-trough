@@ -83,13 +83,23 @@ class VisionOCR:
 
     def extract_caption_and_tags(self, image: Image.Image) -> str:
         """
-        Extracts the bottom-left region of the TikTok screen where username,
-        captions, and hashtags are displayed.
+        Extracts the lower region of the TikTok screen where username,
+        captions, photo titles, and hashtags are displayed.
         """
         w, h = image.size
-        # TikTok caption box: left 4% to 85% width, 70% to 90% height
-        box = (int(w * 0.04), int(h * 0.70), int(w * 0.85), int(h * 0.90))
+        # TikTok caption box: cover left margin to avoid clipped letters, and 55% to 94% height
+        box = (0, int(h * 0.55), int(w * 0.90), int(h * 0.94))
         return self.extract_text(image, crop_box=box)
+
+    def extract_full_content(self, image: Image.Image) -> Tuple[str, str]:
+        """
+        Extracts both caption area text and overall on-screen text (including video stickers,
+        titles, subtitles, and search pills).
+        Returns (caption_text, full_screen_text).
+        """
+        caption_text = self.extract_caption_and_tags(image)
+        full_text = self.extract_text(image)
+        return caption_text, full_text
 
     def extract_header_text(self, image: Image.Image) -> str:
         """

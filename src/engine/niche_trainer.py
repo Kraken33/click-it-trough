@@ -18,18 +18,24 @@ class NicheTrainer:
         self.target_keywords = [k.lower().strip() for k in target_keywords]
         self.seed_terms = seed_terms
 
-    def evaluate_relevance(self, caption_and_tags: str) -> Tuple[float, List[str]]:
+    def evaluate_relevance(self, text: str) -> Tuple[float, List[str]]:
         """
         Calculates a relevance score (0.0 to 1.0) and identifies matching niche keywords.
+        Checks both raw text and normalized alphanumeric text (handling dashes, hashtags, spaces).
         """
-        if not caption_and_tags:
+        if not text:
             return 0.0, []
 
-        lowered = caption_and_tags.lower()
+        import re
+        lowered = text.lower()
+        normalized = re.sub(r"[^a-z0-9]", "", lowered)
+
         matched = []
         for kw in self.target_keywords:
-            if kw in lowered:
-                matched.append(kw)
+            clean_kw = re.sub(r"[^a-z0-9]", "", kw)
+            if kw in lowered or (clean_kw and clean_kw in normalized):
+                if kw not in matched:
+                    matched.append(kw)
 
         if not matched:
             return 0.0, []
@@ -44,7 +50,10 @@ class NicheTrainer:
         gesture: BiometricGestureEngine,
         term: str,
         videos_to_watch: int = 3,
+        dwell_min_sec: float = 7.0,
+        dwell_max_sec: float = 15.0,
         on_progress: Optional[Callable[[str], None]] = None,
+        stop_checker: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """
         Executes a niche search on TikTok to prime the recommendation algorithm.
@@ -64,7 +73,14 @@ class NicheTrainer:
                 except Exception:
                     pass
 
+        def should_stop() -> bool:
+            return bool(stop_checker and stop_checker())
+
         try:
+            if should_stop():
+                notify("Search seeding cancelled.")
+                return False
+
             notify(f"Opening TikTok Search for '{term}'...")
             # 1. Tap search icon (top right: ~93% width, ~7.7% height)
             search_icon_x = w * random.uniform(0.92, 0.94)
@@ -72,10 +88,18 @@ class NicheTrainer:
             client.tap(search_icon_x, search_icon_y)
             time.sleep(random.uniform(1.5, 2.0))
 
+            if should_stop():
+                notify("Search seeding stopped.")
+                return False
+
             # 2. Type search text
             notify(f"Typing query: '{term}'...")
             client.send_keys(term)
             time.sleep(random.uniform(0.8, 1.2))
+
+            if should_stop():
+                notify("Search seeding stopped.")
+                return False
 
             # Tap red 'Search' button in header (~91.5% width, ~8.2% height)
             notify(f"Executing search for '{term}'...")
@@ -84,6 +108,10 @@ class NicheTrainer:
             client.tap(search_btn_x, search_btn_y)
             time.sleep(random.uniform(2.5, 3.5))
 
+            if should_stop():
+                notify("Search seeding stopped.")
+                return False
+
             # 3. Tap first video in search results (top-left tile ~25% width, ~30% height)
             notify(f"Opening top video for '{term}'...")
             client.tap(w * random.uniform(0.22, 0.30), h * random.uniform(0.28, 0.35))
@@ -91,9 +119,20 @@ class NicheTrainer:
 
             # 4. Watch a few search result videos with human attention and likes
             for i in range(videos_to_watch):
-                dwell = random.uniform(8.0, 15.0)
+                if should_stop():
+                    notify("Search seeding stopped.")
+                    return False
+
+                d_min = min(dwell_min_sec, dwell_max_sec)
+                d_max = max(dwell_min_sec, dwell_max_sec)
+                dwell = random.uniform(d_min, d_max)
                 notify(f"Watching seed video {i+1}/{videos_to_watch} for {dwell:.1f}s...")
-                time.sleep(dwell)
+                t_start = time.time()
+                while time.time() - t_start < dwell:
+                    if should_stop():
+                        notify("Search seeding stopped by user.")
+                        return False
+                    time.sleep(0.3)
 
                 # Like the first or second seed video to signal strong interest
                 if i == 0 or (videos_to_watch > 1 and i == 1):
@@ -102,6 +141,9 @@ class NicheTrainer:
                     time.sleep(random.uniform(1.0, 1.5))
 
                 if i < videos_to_watch - 1:
+                    if should_stop():
+                        notify("Search seeding stopped.")
+                        return False
                     notify("Swiping to next video in search feed...")
                     gesture.swipe_next_video()
                     time.sleep(random.uniform(1.2, 2.0))
