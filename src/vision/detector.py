@@ -1,6 +1,6 @@
 import re
-from typing import List, Optional, Tuple
-from PIL import Image
+from typing import Dict, List, Optional, Tuple
+from PIL import Image, ImageOps, ImageStat
 
 from .ocr import VisionOCR
 
@@ -289,19 +289,53 @@ class ScreenDetector:
         Returns (is_story, list_of_matched_indicators).
         """
         raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
-        is_feed = ("for you" in raw_text or "foryou" in raw_text or "following" in raw_text) and ("home" in raw_text or "inbox" in raw_text)
+        is_feed = ("home" in raw_text and ("inbox" in raw_text or "profile" in raw_text)) or any(
+            t in raw_text for t in ["for you", "foryou", "following", "для вас", "підписки", "подписки"]
+        )
         matched = [p for p in self.STORY_PATTERNS if re.search(p, raw_text)]
         return (not is_feed and len(matched) > 0), matched
 
     def is_profile_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether an author/user profile page is open.
+        Requires:
+        - "following" (or localized equivalent)
+        - "followers" (or localized equivalent)
+        - "likes" (or localized equivalent)
         Returns (is_profile, list_of_matched_indicators).
         """
         raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
-        is_feed = ("for you" in raw_text or "foryou" in raw_text or "following" in raw_text) and ("home" in raw_text or "inbox" in raw_text)
-        matched = [p for p in self.PROFILE_PATTERNS if re.search(p, raw_text)]
-        return (not is_feed and len(matched) >= 2), matched
+        has_following = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["following", "підписки", "подписки"])
+        has_followers = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["followers", "підписники", "подписчики", "читачі"])
+        has_likes = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["likes", "вподобайки", "лайки"])
+
+        if has_following and has_followers and has_likes:
+            has_bottom_bar = "home" in raw_text and ("profile" in raw_text or "профіль" in raw_text or "профиль" in raw_text)
+            if has_bottom_bar:
+                return True, ["profile_tab", "following_followers_likes"]
+            return True, ["author_profile", "following_followers_likes"]
+        return False, []
+
+    def is_inbox_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR on the top header region (Y < 0.18) to detect whether the Inbox tab is open.
+        Ignores 'inbox' in the bottom navigation bar.
+        Returns (is_inbox, list_of_matched_indicators).
+        """
+        header_text = self.ocr.extract_header_text(screen_image).lower()
+        inbox_terms = [
+            r"\binbox\b",
+            r"\bactivity\b",
+            r"\bdirect messages\b",
+            r"\bвхідні\b",
+            r"\bвходящие\b",
+            r"\bповідомлення\b",
+            r"\bchats\b",
+            r"\bчати\b",
+            r"\bчаты\b",
+        ]
+        matched = [p for p in inbox_terms if re.search(p, header_text)]
+        return len(matched) > 0, matched
 
     def is_search_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
@@ -320,11 +354,11 @@ class ScreenDetector:
         - 'comments': Comments sheet drawer is open.
         - 'share': Share sheet / Send to drawer is open.
         - 'story': Story player is open.
-        - 'profile': Author profile page is open.
+        - 'profile': Author profile page or own profile tab is open.
         - 'search': Search / Discover page is open.
         - 'popup': Modal alert or captcha.
         - 'homescreen': iOS SpringBoard / App Library.
-        - 'other_tab': On an alternative tab (e.g. Inbox / Friends).
+        - 'other_tab': On an alternative tab (e.g. Inbox).
         - 'unknown': Ambiguous state.
         """
         # Extract screen text once to evaluate all state detectors efficiently (0.3-0.5s total)
@@ -364,7 +398,7 @@ class ScreenDetector:
         if is_story:
             return "story", st_markers
 
-        # 8. Profile page check
+        # 8. Profile page check (following + followers + likes)
         is_prof, p_markers = self.is_profile_page_open(screen_image, text=text)
         if is_prof:
             return "profile", p_markers
@@ -374,39 +408,92 @@ class ScreenDetector:
         if is_srch:
             return "search", sr_markers
 
-        # 10. Clean video feed check
+        # 10. Inbox tab check (header zone only, ignoring bottom navigation bar)
+        is_inbox, in_markers = self.is_inbox_open(screen_image, text=text)
+        if is_inbox:
+            return "other_tab", in_markers
+
+        # 11. Clean video feed check
         is_tt, tt_markers = self.is_tiktok_open(screen_image, text=text)
         if is_tt:
-            if any(term in text for term in ["for you", "foryou", "для вас", "following"]):
-                return "feed", tt_markers
-            else:
-                return "other_tab", tt_markers
+            return "feed", tt_markers
 
         return "unknown", []
 
-    def extract_likes_amount(self, screen_image: Image.Image) -> Optional[str]:
+    # Vertical normalized Y-zones for TikTok right-hand sidebar action counters
+    # (ordered top-to-bottom: likes -> comments -> saves -> shares)
+    METRIC_SLOTS = {
+        "likes": (0.45, 0.585, 0.53),        # (min_cy, max_cy, expected_center_cy)
+        "comments": (0.585, 0.685, 0.635),
+        "saves": (0.685, 0.785, 0.735),
+        "shares": (0.785, 0.94, 0.85),
+    }
+
+    def extract_sidebar_metrics(self, screen_image: Image.Image) -> Dict[str, str]:
         """
-        Extracts the likes count strictly from the dedicated like zone on the right action sidebar.
-        Dedicated zone: cx >= 0.80 and 0.50 <= cy <= 0.62 (directly below the heart icon, above comments).
-        Returns the parsed like count string (e.g. '1,454', '43.2K', '1.2M') or None if not present.
+        Extracts all numeric counts available on the right-hand action column:
+        likes, comments, saves/bookmarks, and shares.
+        Maps detected text to specific metric slots based on vertical coordinate bands.
+        If few or no metrics are recognized (e.g. bright/white background),
+        applies contrast enhancement and inversion on the sidebar crop.
+        Returns a dict mapping slot name to cleaned count string, e.g.:
+        {'likes': '12.4K', 'comments': '543', 'saves': '2,100', 'shares': '150'}
         """
         obs = self.ocr.extract_observations(screen_image)
-        if not obs:
-            return None
+        metrics: Dict[str, Tuple[float, str]] = {}  # slot: (distance_to_center, value)
 
-        candidates = []
-        for text, cx, cy, w, h in obs:
-            if cx >= 0.78 and 0.48 <= cy <= 0.62:
+        def _process_observations(observations, is_cropped: bool = False):
+            for item in observations:
+                text = item[0]
+                cx, cy, w, h = item[1], item[2], item[3], item[4]
+                if is_cropped:
+                    # Crop covers x: [0.75, 1.0], y: [0.44, 0.94]
+                    cx = 0.75 + cx * 0.25
+                    cy = 0.44 + cy * 0.50
+
+                if cx < 0.76 or w > 0.24:
+                    continue
+
                 cleaned = text.replace(" ", "").replace("·", "").replace("•", "").upper()
-                if re.match(r"^\d[0-9.,]*[KMB]?$", cleaned):
-                    candidates.append((cy, cleaned))
+                if not re.match(r"^\d[0-9.,]*[KMB]?$", cleaned):
+                    continue
 
-        if not candidates:
-            return None
+                for slot, (min_cy, max_cy, center_cy) in self.METRIC_SLOTS.items():
+                    if min_cy <= cy < max_cy:
+                        dist = abs(cy - center_cy)
+                        if slot not in metrics or dist < metrics[slot][0]:
+                            metrics[slot] = (dist, cleaned)
+                        break
 
-        # The like count is the topmost metric in the right action column
-        candidates.sort(key=lambda item: item[0])
-        return candidates[0][1]
+        if obs:
+            _process_observations(obs, is_cropped=False)
+
+        # If 0 or only 1 metric detected, attempt enhanced OCR on right sidebar crop
+        if len(metrics) < 2 and screen_image:
+            try:
+                w, h = screen_image.size
+                box = (int(w * 0.75), int(h * 0.44), w, int(h * 0.94))
+                crop = screen_image.crop(box)
+                gray = crop.convert("L")
+                enhanced = ImageOps.autocontrast(gray, cutoff=2)
+                stat = ImageStat.Stat(enhanced)
+                if stat.mean[0] > 150:
+                    enhanced = ImageOps.invert(enhanced)
+                crop_obs = self.ocr.extract_observations(enhanced)
+                if crop_obs:
+                    _process_observations(crop_obs, is_cropped=True)
+            except Exception:
+                pass
+
+        return {k: v[1] for k, v in metrics.items()}
+
+    def extract_likes_amount(self, screen_image: Image.Image) -> Optional[str]:
+        """
+        Extracts the likes count from the dedicated zone on the right action sidebar.
+        Returns the parsed like count string (e.g. '1,454', '43.2K', '1.2M') or None if not present.
+        """
+        metrics = self.extract_sidebar_metrics(screen_image)
+        return metrics.get("likes")
 
     def extract_likes_and_signature(self, screen_image: Image.Image) -> Tuple[Optional[str], str]:
         """
@@ -426,37 +513,55 @@ class ScreenDetector:
         self,
         before_image: Image.Image,
         after_image: Image.Image,
+        before_metrics: Optional[Dict[str, str]] = None,
+        after_metrics: Optional[Dict[str, str]] = None,
         before_likes: Optional[str] = None,
         before_sig: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
-        Verifies whether the video on screen changed after a swipe gesture.
-        Strictly requires that the amount of likes in the dedicated zone has changed:
-        - If no likes amount is detected in the dedicated zone before or after swipe:
-          something went wrong (returns False).
-        - If likes amount is unchanged (before == after):
-          we are still on the same video (returns False).
-        - If likes amount changed (before != after):
-          video change is confirmed (returns True).
+        Verifies whether the video on screen changed after a swipe gesture
+        by checking all available right-sidebar counters (likes, comments, saves, shares).
+
+        Verification logic:
+        1. If both before and after have 0 metrics detected: returns (False, "NO_METRICS:...").
+        2. If either before or after has 0 metrics: returns (False, "NO_METRICS:...").
+        3. If common metrics exist:
+           - If ANY common metric changed: returns (True, "Metrics changed:...").
+           - If ALL common metrics match identically: returns (False, "Metrics unchanged:...").
+        4. If no common metrics exist between before and after (e.g. due to white background
+           covering likes/comments on one screen and saves/shares on the other):
+           treats as changed since different metrics became visible.
         """
-        if before_likes is None:
-            before_likes = self.extract_likes_amount(before_image)
+        if before_metrics is None:
+            if before_likes is not None:
+                before_metrics = {"likes": before_likes}
+            else:
+                before_metrics = self.extract_sidebar_metrics(before_image)
 
-        after_likes = self.extract_likes_amount(after_image)
+        if after_metrics is None:
+            after_metrics = self.extract_sidebar_metrics(after_image)
 
-        # Both before and after MUST have a valid likes amount in the dedicated zone
-        if before_likes is None and after_likes is None:
-            return False, "No likes amount in dedicated zone before or after swipe"
+        # Check if zero metrics were detected
+        if not before_metrics and not after_metrics:
+            return False, "NO_METRICS: No sidebar metrics detected before or after swipe"
 
-        if before_likes is None:
-            return False, f"No likes amount in dedicated zone before swipe (after={after_likes})"
+        if not before_metrics:
+            return False, f"NO_METRICS: No sidebar metrics detected before swipe (after={after_metrics})"
 
-        if after_likes is None:
-            return False, f"No likes amount in dedicated zone after swipe (before={before_likes})"
+        if not after_metrics:
+            return False, f"NO_METRICS: No sidebar metrics detected after swipe (before={before_metrics})"
 
-        # Verification check: did the likes amount change?
-        if before_likes == after_likes:
-            return False, f"Likes amount unchanged ({before_likes}) - still on the same video"
-
-        return True, f"Likes changed: {before_likes} -> {after_likes}"
+        # Check overlapping metrics
+        common_keys = set(before_metrics.keys()) & set(after_metrics.keys())
+        if common_keys:
+            changed_keys = [k for k in common_keys if before_metrics[k] != after_metrics[k]]
+            if changed_keys:
+                changes = ", ".join(f"{k} {before_metrics[k]} -> {after_metrics[k]}" for k in sorted(changed_keys))
+                return True, f"Metrics changed: {changes}"
+            else:
+                same = ", ".join(f"{k}={before_metrics[k]}" for k in sorted(common_keys))
+                return False, f"Metrics unchanged ({same}) - still on the same video"
+        else:
+            # Partial overlap with no common keys: different metrics visible
+            return True, f"Different metrics visible (before: {before_metrics}, after: {after_metrics}) - video changed"
 

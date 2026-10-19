@@ -331,9 +331,13 @@ class SessionRunner:
                 # Dismiss story viewer by tapping top-right 'X'
                 self.wda.tap(w * 0.93, h * 0.09)
             elif state == "profile":
-                # Author profile opened: edge-swipe right and tap top-left '<' arrow
-                self.wda.press_and_drag_with_velocity(w * 0.05, h * 0.50, w * 0.75, h * 0.50, velocity=2600.0)
-                self.wda.tap(w * 0.08, h * 0.07)
+                if markers and "profile_tab" in markers:
+                    # Own profile bottom tab is active: tap bottom Home tab to return to feed
+                    self.wda.tap(w * 0.10, h * 0.95)
+                else:
+                    # Author profile opened: edge-swipe right and tap top-left '<' arrow
+                    self.wda.press_and_drag_with_velocity(w * 0.05, h * 0.50, w * 0.75, h * 0.50, velocity=2600.0)
+                    self.wda.tap(w * 0.08, h * 0.07)
             elif state == "search":
                 # Search opened: tap top-left back arrow or cancel
                 self.wda.tap(w * 0.08, h * 0.07)
