@@ -231,4 +231,57 @@ class BiometricGestureEngine:
             tap_y = h * random.uniform(0.338, 0.350)
             return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(45, 75))
 
+    def tap_author_avatar(self) -> bool:
+
+        """Taps the creator's avatar on the right sidebar of the FYP feed to open their profile."""
+        w, h = self.screen_width, self.screen_height
+        # Avatar is on the right-hand bar directly above the heart icon (~92.5% w, ~47.5-49.5% h)
+        avatar_x = w * random.uniform(0.905, 0.945)
+        avatar_y = h * random.uniform(0.472, 0.495)
+        return self.client.tap(avatar_x, avatar_y, dwell_ms=random.randint(45, 75))
+
+    def swipe_to_profile(self) -> bool:
+        """Swipes horizontally from right to left across the video to open the author profile."""
+        w, h = self.screen_width, self.screen_height
+        start_x = w * random.uniform(0.78, 0.88)
+        end_x = w * random.uniform(0.14, 0.24)
+        y = h * random.uniform(0.48, 0.54)
+        duration_ms = random.randint(200, 280)
+        return self.client.swipe(
+            direction="left",
+            x=start_x,
+            y=y,
+            velocity=random.uniform(1500, 2200),
+        )
+
+    def tap_first_profile_video(self) -> bool:
+        """Taps the first video thumbnail in the author profile's 3-column video grid."""
+        w, h = self.screen_width, self.screen_height
+        # First video tile is at top-left of the profile grid (~16-22% w, ~68-74% h)
+        tile_x = w * random.uniform(0.14, 0.22)
+        tile_y = h * random.uniform(0.68, 0.74)
+        return self.client.tap(tile_x, tile_y, dwell_ms=random.randint(50, 80))
+
+    def tap_follow_button(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
+        """
+        Taps the Follow button on the author's profile page.
+        Accepts optional OCR-located pixel coordinates with micro-jitter.
+        """
+        w, h = self.screen_width, self.screen_height
+        if x is not None and y is not None:
+            target_x = x + random.uniform(-4, 4)
+            target_y = y + random.uniform(-3, 3)
+        else:
+            # Standard author profile follow button location (~40-60% w, ~30-34% h)
+            target_x = w * random.uniform(0.42, 0.58)
+            target_y = h * random.uniform(0.305, 0.335)
+        return self.client.tap(target_x, target_y, dwell_ms=random.randint(50, 85))
+
+    def tap_profile_back(self) -> bool:
+        """Taps the top-left back chevron button on profile or video player to return to previous screen."""
+        w, h = self.screen_width, self.screen_height
+        back_x = w * random.uniform(0.045, 0.075)
+        back_y = h * random.uniform(0.065, 0.082)
+        return self.client.tap(back_x, back_y, dwell_ms=random.randint(45, 75))
+
 

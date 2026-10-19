@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Shuffle,
+  UserPlus,
 } from 'lucide-react';
 
 interface SessionStats {
@@ -32,6 +33,8 @@ interface SessionStats {
   likes_count: number;
   favorites_count: number;
   comments_viewed: number;
+  follows_count: number;
+  session_follow_target: number;
   ads_skipped: number;
   lives_skipped: number;
   niche_matched_count: number;
@@ -189,6 +192,8 @@ export default function App() {
     likes_count: 0,
     favorites_count: 0,
     comments_viewed: 0,
+    follows_count: 0,
+    session_follow_target: 0,
     ads_skipped: 0,
     lives_skipped: 0,
     niche_matched_count: 0,
@@ -1116,7 +1121,7 @@ export default function App() {
         {/* Right Column: Telemetry, Tabs & Configuration (7 cols) */}
         <div className="lg:col-span-7 flex flex-col gap-6">
           {/* Key Metrics Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             <div className="bg-[#12131a] border border-gray-800/80 p-4 rounded-2xl flex flex-col">
               <span className="text-xs text-gray-400 font-medium">Videos Watched</span>
               <span className="text-2xl font-bold text-white mt-1">{stats.videos_watched}</span>
@@ -1159,10 +1164,28 @@ export default function App() {
 
             <div className="bg-[#12131a] border border-gray-800/80 p-4 rounded-2xl flex flex-col">
               <span className="text-xs text-emerald-400 font-medium flex items-center gap-1.5">
-                <ShieldAlert className="w-3.5 h-3.5 text-emerald-400" /> Ads Fast-Skipped
+                <UserPlus className="w-3.5 h-3.5 text-emerald-400" /> Profiles Followed
+              </span>
+              <span className="text-2xl font-bold text-white mt-1">{stats.follows_count}</span>
+              <span className="text-[11px] text-gray-500 mt-1">
+                Target: {stats.session_follow_target || (config?.follow?.follows_per_session_max ?? 3)} / session
+              </span>
+            </div>
+
+            <div className="bg-[#12131a] border border-gray-800/80 p-4 rounded-2xl flex flex-col">
+              <span className="text-xs text-rose-400 font-medium flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" /> Ads Skipped
               </span>
               <span className="text-2xl font-bold text-white mt-1">{stats.ads_skipped}</span>
               <span className="text-[11px] text-gray-500 mt-1">Filtered promotions</span>
+            </div>
+
+            <div className="bg-[#12131a] border border-gray-800/80 p-4 rounded-2xl flex flex-col">
+              <span className="text-xs text-blue-400 font-medium flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-blue-400" /> Lives Skipped
+              </span>
+              <span className="text-2xl font-bold text-white mt-1">{stats.lives_skipped}</span>
+              <span className="text-[11px] text-gray-500 mt-1">Fast-passed streams</span>
             </div>
           </div>
 
@@ -2020,7 +2043,158 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* 4. Natural Pauses & Biometric Gestures */}
+                  {/* 4. Creator Profile Subscriptions (Auto-Follow) */}
+                  <div className="border-t border-gray-800 pt-4">
+                    <div className="flex items-center justify-between mb-2.5">
+                      <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <UserPlus className="w-3.5 h-3.5 text-emerald-400" /> Creator Profile Subscriptions (Auto-Follow)
+                      </h4>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <span className="text-[11px] text-gray-400">Enabled</span>
+                        <input
+                          type="checkbox"
+                          checked={config.follow?.enabled ?? true}
+                          onChange={(e) => {
+                            const updated = {
+                              ...config,
+                              follow: {
+                                ...config.follow,
+                                enabled: e.target.checked,
+                              },
+                            };
+                            setConfig(updated);
+                          }}
+                          className="rounded border-gray-700 bg-gray-900 text-emerald-500 focus:ring-emerald-500/30"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="p-3 bg-gray-900/60 border border-gray-800 rounded-xl flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-semibold text-gray-200">Min Matched Tags Condition</span>
+                          <p className="text-[11px] text-gray-400 mt-0.5">
+                            Minimum niche tags required on video to consider following creator
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={config.follow?.min_matched_tags ?? 2}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value) || 2);
+                              const updated = {
+                                ...config,
+                                follow: {
+                                  ...config.follow,
+                                  min_matched_tags: val,
+                                },
+                              };
+                              setConfig(updated);
+                            }}
+                            className="w-16 px-2.5 py-1 text-center bg-gray-950 border border-gray-800 rounded-lg text-emerald-400 font-mono text-xs"
+                          />
+                          <span className="text-xs text-gray-400">tags</span>
+                        </div>
+                      </div>
+
+                      <RangeField
+                        label="Subscriptions per Session Range"
+                        sublabel="Target follow quota randomly sampled at the start of each session"
+                        minVal={config.follow?.follows_per_session_min ?? 1}
+                        maxVal={config.follow?.follows_per_session_max ?? 3}
+                        step={1}
+                        minLimit={0}
+                        maxLimit={15}
+                        unit=" follows"
+                        badgeColor="emerald"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            follow: {
+                              ...config.follow,
+                              follows_per_session_min: min,
+                              follows_per_session_max: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Organic Follow Probability"
+                        sublabel="Probability to initiate follow sequence when matched tags threshold is met"
+                        minVal={config.follow?.follow_probability_min ?? 0.50}
+                        maxVal={config.follow?.follow_probability_max ?? 0.70}
+                        step={0.05}
+                        minLimit={0.1}
+                        maxLimit={1.0}
+                        isPercent={true}
+                        badgeColor="emerald"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            follow: {
+                              ...config.follow,
+                              follow_probability_min: min,
+                              follow_probability_max: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Creator Videos Watched Before Following"
+                        sublabel="Number of videos watched on creator profile before tapping follow"
+                        minVal={config.follow?.profile_videos_min ?? 1}
+                        maxVal={config.follow?.profile_videos_max ?? 3}
+                        step={1}
+                        minLimit={1}
+                        maxLimit={6}
+                        unit=" videos"
+                        badgeColor="emerald"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            follow: {
+                              ...config.follow,
+                              profile_videos_min: min,
+                              profile_videos_max: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+
+                      <RangeField
+                        label="Profile Video Dwell Duration"
+                        sublabel="Attention span per video watched inside the creator profile"
+                        minVal={config.follow?.profile_video_dwell_min_sec ?? 5.0}
+                        maxVal={config.follow?.profile_video_dwell_max_sec ?? 10.0}
+                        step={0.5}
+                        minLimit={2.0}
+                        maxLimit={25.0}
+                        unit="s"
+                        badgeColor="emerald"
+                        onChange={(min, max) => {
+                          const updated = {
+                            ...config,
+                            follow: {
+                              ...config.follow,
+                              profile_video_dwell_min_sec: min,
+                              profile_video_dwell_max_sec: max,
+                            },
+                          };
+                          setConfig(updated);
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* 5. Natural Pauses & Biometric Gestures */}
                   <div className="border-t border-gray-800 pt-4">
                     <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
                       <Zap className="w-3.5 h-3.5 text-cyan-400" /> Natural Pauses & Biometrics

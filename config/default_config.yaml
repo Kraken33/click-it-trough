@@ -130,10 +130,23 @@ safety:
   max_daily_videos: 150
   max_daily_likes: 35
   max_daily_favorites: 15
+  max_daily_follows: 15
   auto_pause_on_captcha: true
   play_sound_on_alert: true
   macos_notification: true
   screenshot_dir: logs/captchas
+follow:
+  enabled: true
+  min_matched_tags: 2
+  follows_per_session_min: 1
+  follows_per_session_max: 3
+  follow_probability_min: 0.50
+  follow_probability_max: 0.70
+  profile_videos_min: 1
+  profile_videos_max: 3
+  profile_video_dwell_min_sec: 5.0
+  profile_video_dwell_max_sec: 10.0
+
 scheduler:
   enabled: true
   sessions_per_day: 3

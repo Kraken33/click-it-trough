@@ -425,6 +425,70 @@ class ScreenDetector:
 
         return False, []
 
+    def is_already_following_author(self, screen_image: Image.Image, text: Optional[str] = None) -> bool:
+        """
+        Detects if the currently viewed author profile is already followed.
+        Checks for indicators like 'following', 'friends', 'requested', or a standalone 'message' button.
+        """
+        raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+
+        # Check if 'follow' button (unfollowed state) is present
+        has_unfollowed_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["follow", "підписатися", "подписаться"])
+
+        # Explicit followed / requested terms
+        already_following_terms = [
+            r"\bfollowing\b",
+            r"\bfriends\b",
+            r"\brequested\b",
+            r"\bпідписки\b",
+            r"\bчитаєте\b",
+            r"\bви стежите\b",
+            r"\bдрузі\b",
+            r"\bдрузья\b",
+            r"\bзапит надіслано\b",
+            r"\bзапрос отправлен\b",
+        ]
+        has_following_marker = any(re.search(p, raw_text) for p in already_following_terms)
+
+        if has_following_marker and not has_unfollowed_btn:
+            return True
+
+        # If Message button is present without an unfollowed 'Follow' button
+        has_message_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["message", "повідомлення", "сообщение"])
+        if has_message_btn and not has_unfollowed_btn:
+            return True
+
+        return False
+
+    def is_private_account(self, screen_image: Image.Image, text: Optional[str] = None) -> bool:
+        """Detects if the currently viewed account is private."""
+        raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+        private_terms = [
+            "this account is private",
+            "private account",
+            "це приватний акаунт",
+            "это приватный аккаунт",
+        ]
+        return any(term in raw_text for term in private_terms)
+
+    def find_follow_button_coords(self, screen_image: Image.Image) -> Optional[Tuple[float, float]]:
+        """
+        Locates the Follow button on the author's profile page using Vision OCR observations.
+        Returns (center_x_px, center_y_px) or None if not found.
+        """
+        observations = self.ocr.extract_observations(screen_image)
+        w, h = screen_image.size
+
+        for text, cx, cy, bw, bh in observations:
+            clean = text.strip().lower()
+            if clean in ["follow", "підписатися", "подписаться"]:
+                # Profile follow button is in upper-mid section (typically Y between 0.18 and 0.48)
+                if 0.18 <= cy <= 0.48:
+                    return cx * w, cy * h
+
+        return None
+
+
     def is_inbox_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR on the top header region (Y < 0.18) to detect whether the Inbox tab is open.

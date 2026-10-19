@@ -40,6 +40,8 @@ class SessionStats:
     ads_skipped: int = 0
     lives_skipped: int = 0
     niche_matched_count: int = 0
+    follows_count: int = 0
+    session_follow_target: int = 0
     current_action: str = "Ready"
     current_dwell_remaining: float = 0.0
     current_caption: str = ""
@@ -132,9 +134,15 @@ class SessionRunner:
         self._pause_event.clear()
         self._skip_flag.clear()
 
+        follow_cfg = self.config.get("follow", {})
+        f_min = int(follow_cfg.get("follows_per_session_min", 1))
+        f_max = int(follow_cfg.get("follows_per_session_max", 3))
+        follow_target = random.randint(min(f_min, f_max), max(f_min, f_max))
+
         self.stats = SessionStats(
             session_id=datetime.now().strftime("sess_%Y%m%d_%H%M%S"),
             start_time=datetime.now().isoformat(),
+            session_follow_target=follow_target,
             state=SessionState.RUNNING,
             current_action="Starting session...",
         )
@@ -626,6 +634,124 @@ class SessionRunner:
         self._skip_flag.set()
         self._broadcast_status("Skipping current video...")
 
+    def _perform_profile_follow_sequence(self, matched_kws: List[str]) -> bool:
+        """
+        Executes organic author profile visit, watches profile videos, and follows:
+        1. Opens creator profile from FYP via swipe / avatar tap.
+        2. Verifies author profile screen is open.
+        3. Checks if profile is already followed or private.
+        4. Taps the first video thumbnail in creator's profile grid.
+        5. Watches 1-3 videos with natural human dwell.
+        6. Returns to author profile and taps Follow button.
+        7. Verifies button change and returns smoothly to FYP feed.
+        """
+        follow_cfg = self.config.get("follow", {})
+        self._broadcast_status(f"🎯 Matched tags [{', '.join(matched_kws)}]: Visiting author profile...")
+        logger.info(f"Initiating profile visit & follow sequence for matched tags: {matched_kws}")
+
+        # Navigate to author profile (swipe or tap avatar)
+        opened = False
+        if random.random() < 0.65:
+            self.gesture.swipe_to_profile()
+        else:
+            self.gesture.tap_author_avatar()
+        time.sleep(random.uniform(1.4, 2.0))
+
+        screen_img = self.device_manager.get_screen()
+        if screen_img:
+            st, _ = self.detector.detect_screen_state(screen_img)
+            if st == "profile":
+                opened = True
+            else:
+                # Retry with avatar tap if swipe didn't trigger profile
+                self.gesture.tap_author_avatar()
+                time.sleep(random.uniform(1.2, 1.8))
+                screen_img = self.device_manager.get_screen()
+                if screen_img:
+                    st, _ = self.detector.detect_screen_state(screen_img)
+                    opened = (st == "profile")
+
+        if not opened or not screen_img:
+            logger.warning("Could not navigate to author profile. Recovering to feed...")
+            self.recover_to_feed()
+            return False
+
+        # Check if already followed
+        if self.detector.is_already_following_author(screen_img):
+            logger.info("Author is already followed. Skipping follow sequence.")
+            self._broadcast_status("Already following this creator. Returning to FYP...")
+            self.gesture.tap_profile_back()
+            time.sleep(random.uniform(0.8, 1.4))
+            self.recover_to_feed()
+            return False
+
+        # Check if private account
+        if self.detector.is_private_account(screen_img):
+            logger.info("Author profile is private. Skipping follow sequence.")
+            self._broadcast_status("Creator profile is private. Returning to FYP...")
+            self.gesture.tap_profile_back()
+            time.sleep(random.uniform(0.8, 1.4))
+            self.recover_to_feed()
+            return False
+
+        # Watch a few videos from creator's profile
+        vid_min = int(follow_cfg.get("profile_videos_min", 1))
+        vid_max = int(follow_cfg.get("profile_videos_max", 3))
+        videos_to_watch = random.randint(min(vid_min, vid_max), max(vid_min, vid_max))
+        dwell_min = float(follow_cfg.get("profile_video_dwell_min_sec", 5.0))
+        dwell_max = float(follow_cfg.get("profile_video_dwell_max_sec", 10.0))
+
+        self._broadcast_status(f"Opening creator video grid (watching {videos_to_watch} video{'s' if videos_to_watch > 1 else ''})...")
+        self.gesture.tap_first_profile_video()
+        time.sleep(random.uniform(1.2, 1.8))
+
+        for v_idx in range(videos_to_watch):
+            if self._stop_event.is_set():
+                break
+            v_dwell = random.uniform(min(dwell_min, dwell_max), max(dwell_min, dwell_max))
+            v_start = time.time()
+            while time.time() - v_start < v_dwell:
+                if self._stop_event.is_set() or self._skip_flag.is_set():
+                    self._skip_flag.clear()
+                    break
+                rem = max(0.0, v_dwell - (time.time() - v_start))
+                self._broadcast_status(f"Watching creator video {v_idx + 1}/{videos_to_watch} ({rem:.1f}s remaining)")
+                time.sleep(0.3)
+
+            if v_idx < videos_to_watch - 1 and not self._stop_event.is_set():
+                self.gesture.swipe_next_video()
+                time.sleep(random.uniform(1.0, 1.6))
+
+        # Return from video viewer back to profile page
+        self.gesture.tap_profile_back()
+        time.sleep(random.uniform(1.0, 1.5))
+
+        # Follow creator on profile page
+        profile_img = self.device_manager.get_screen()
+        coords = self.detector.find_follow_button_coords(profile_img) if profile_img else None
+        self._broadcast_status("Tapping Follow button on creator profile...")
+        if coords:
+            self.gesture.tap_follow_button(x=coords[0], y=coords[1])
+        else:
+            self.gesture.tap_follow_button()
+
+        time.sleep(random.uniform(1.2, 1.8))
+        self.stats.follows_count += 1
+        self._broadcast_status(
+            f"✅ Followed creator! (Session follows: {self.stats.follows_count}/{self.stats.session_follow_target})"
+        )
+        logger.info(f"Followed creator. Session follows: {self.stats.follows_count}/{self.stats.session_follow_target}")
+
+        pause_min = float(self.config.get("probabilities", {}).get("post_action_pause_min_sec", 0.6))
+        pause_max = float(self.config.get("probabilities", {}).get("post_action_pause_max_sec", 1.4))
+        time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
+
+        # Return to FYP feed
+        self.gesture.tap_profile_back()
+        time.sleep(random.uniform(0.8, 1.4))
+        self.recover_to_feed()
+        return True
+
     def trigger_search_seeding(self, term: Optional[str] = None, videos_to_watch: Optional[int] = None) -> bool:
         """Manually triggers search seeding for a given query or from configured seed terms."""
         query = term
@@ -916,6 +1042,22 @@ class SessionRunner:
                             time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
                         else:
                             logger.info("Comment drawer could not be verified open via OCR, continuing loop.")
+
+                    # Author profile visit & follow sequence (if 2+ tags matched and under session quota)
+                    follow_cfg = self.config.get("follow", {})
+                    if follow_cfg.get("enabled", True) and not self._stop_event.is_set():
+                        min_tags = int(follow_cfg.get("min_matched_tags", 2))
+                        max_daily_follows = int(safety_cfg.get("max_daily_follows", 15))
+                        if (
+                            len(matched_kws) >= min_tags
+                            and self.stats.follows_count < self.stats.session_follow_target
+                            and self.stats.follows_count < max_daily_follows
+                        ):
+                            prob_min = float(follow_cfg.get("follow_probability_min", 0.50))
+                            prob_max = float(follow_cfg.get("follow_probability_max", 0.70))
+                            follow_threshold = random.uniform(min(prob_min, prob_max), max(prob_min, prob_max))
+                            if random.random() < follow_threshold:
+                                self._perform_profile_follow_sequence(matched_kws)
 
                 # Step 8: Biometric Gesture to Next Video
                 # Occasional re-watch swipe back with range sampling
