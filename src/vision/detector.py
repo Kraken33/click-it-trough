@@ -80,6 +80,26 @@ class ScreenDetector:
         r"нещодавно додані",
     ]
 
+    # Indicators that iOS virtual keyboard / "Add comment" input field is active
+    KEYBOARD_PATTERNS = [
+        r"\bspace\b",
+        r"\bпробел\b",
+        r"\bпробіл\b",
+        r"\bnpo6e\b",
+        r"\b123\b",
+        r"\bотправить\b",
+        r"\botnpab\b",
+        r"\bнадіслати\b",
+        r"\breturn\b",
+        r"\bdone\b",
+        r"\bsend\b",
+        r"add comment",
+        r"додати коментар",
+        r"оставьте комментарий",
+        r"replying to",
+        r"відповісти користувачу",
+    ]
+
     # Indicators that TikTok comments drawer is open
     COMMENT_PATTERNS = [
         r"\bcomments?\b",
@@ -146,13 +166,13 @@ class ScreenDetector:
     def __init__(self, ocr: Optional[VisionOCR] = None):
         self.ocr = ocr or VisionOCR()
 
-    def check_for_captcha(self, screen_image: Image.Image) -> bool:
+    def check_for_captcha(self, screen_image: Image.Image, text: Optional[str] = None) -> bool:
         """
         Inspects full screen to detect bot verification / slider challenges.
         """
-        text = self.ocr.extract_text(screen_image).lower()
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
         for pattern in self.CAPTCHA_PATTERNS:
-            if re.search(pattern, text):
+            if re.search(pattern, raw_text):
                 return True
         return False
 
@@ -178,14 +198,14 @@ class ScreenDetector:
             return True
         return False
 
-    def detect_popup(self, screen_image: Image.Image) -> Optional[str]:
+    def detect_popup(self, screen_image: Image.Image, text: Optional[str] = None) -> Optional[str]:
         """
         Returns the popup category if an interrupting dialogue is present, else None.
         """
-        text = self.ocr.extract_text(screen_image).lower()
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
         for category, patterns in self.POPUP_PATTERNS.items():
             for pat in patterns:
-                if re.search(pat, text):
+                if re.search(pat, raw_text):
                     return category
         return None
 
@@ -201,79 +221,102 @@ class ScreenDetector:
             return (int(width * 0.5), int(height * 0.58))
         return (int(width * 0.5), int(height * 0.65))
 
-    def is_tiktok_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_tiktok_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether TikTok UI is currently active on screen.
         Returns (is_open, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        matched = [p for p in self.TIKTOK_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.TIKTOK_PATTERNS if re.search(p, raw_text)]
         if not matched:
-            is_comm, comm_m = self.is_comment_section_open(screen_image)
-            if is_comm:
-                return True, comm_m
+            if "foryou" in raw_text or "shop" in raw_text:
+                matched.append(r"\bfor you\b")
+            else:
+                is_comm, comm_m = self.is_comment_section_open(screen_image, text=raw_text)
+                if is_comm:
+                    return True, comm_m
         return len(matched) > 0, matched
 
-    def is_homescreen_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_homescreen_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether iOS SpringBoard / Homescreen is currently active.
         Returns (is_homescreen, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        matched = [p for p in self.HOMESCREEN_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.HOMESCREEN_PATTERNS if re.search(p, raw_text)]
         return len(matched) > 0, matched
 
-    def is_comment_section_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_comment_input_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether the 'Add comment' input section / iOS virtual keyboard is open.
+        Returns (is_open, list_of_matched_indicators).
+        """
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.KEYBOARD_PATTERNS if re.search(p, raw_text)]
+        kb_keys = [
+            m for m in matched
+            if any(k in m for k in ["space", "пробел", "пробіл", "npo6e", "123", "отправить", "otnpab", "надіслати", "return", "done", "send"])
+        ]
+        if kb_keys:
+            return True, matched
+        if any(term in raw_text for term in ["add comment", "додати коментар", "оставьте комментарий", "replying to", "cld t.omment"]):
+            if any(term in raw_text for term in ["comments", "коментар", "комментар", "reply"]):
+                if len(matched) >= 1:
+                    return True, matched
+        return False, []
+
+    def is_comment_section_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether the TikTok comment drawer/sheet is open.
         Returns (is_open, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        matched = [p for p in self.COMMENT_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.COMMENT_PATTERNS if re.search(p, raw_text)]
         return len(matched) > 0, matched
 
-    def is_share_sheet_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_share_sheet_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether the TikTok Share / Send to drawer is open.
         Returns (is_open, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        matched = [p for p in self.SHARE_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.SHARE_PATTERNS if re.search(p, raw_text)]
         return len(matched) >= 2, matched
 
-    def is_story_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_story_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether a TikTok Story is being viewed.
         Returns (is_story, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        is_feed = ("for you" in text or "following" in text) and ("home" in text or "inbox" in text)
-        matched = [p for p in self.STORY_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        is_feed = ("for you" in raw_text or "foryou" in raw_text or "following" in raw_text) and ("home" in raw_text or "inbox" in raw_text)
+        matched = [p for p in self.STORY_PATTERNS if re.search(p, raw_text)]
         return (not is_feed and len(matched) > 0), matched
 
-    def is_profile_page_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_profile_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether an author/user profile page is open.
         Returns (is_profile, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        is_feed = ("for you" in text or "following" in text) and ("home" in text or "inbox" in text)
-        matched = [p for p in self.PROFILE_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        is_feed = ("for you" in raw_text or "foryou" in raw_text or "following" in raw_text) and ("home" in raw_text or "inbox" in raw_text)
+        matched = [p for p in self.PROFILE_PATTERNS if re.search(p, raw_text)]
         return (not is_feed and len(matched) >= 2), matched
 
-    def is_search_page_open(self, screen_image: Image.Image) -> Tuple[bool, List[str]]:
+    def is_search_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether the TikTok search / explore page is open.
         Returns (is_search, list_of_matched_indicators).
         """
-        text = self.ocr.extract_text(screen_image).lower()
-        matched = [p for p in self.SEARCH_PATTERNS if re.search(p, text)]
+        raw_text = text if text is not None else self.ocr.extract_text(screen_image).lower()
+        matched = [p for p in self.SEARCH_PATTERNS if re.search(p, raw_text)]
         return len(matched) > 0, matched
 
     def detect_screen_state(self, screen_image: Image.Image) -> Tuple[str, List[str]]:
         """
         Identifies the current screen state:
         - 'feed': Clean FYP video feed.
+        - 'comment_input': "Add comment" field / iOS virtual keyboard is open.
         - 'comments': Comments sheet drawer is open.
         - 'share': Share sheet / Send to drawer is open.
         - 'story': Story player is open.
@@ -284,50 +327,57 @@ class ScreenDetector:
         - 'other_tab': On an alternative tab (e.g. Inbox / Friends).
         - 'unknown': Ambiguous state.
         """
+        # Extract screen text once to evaluate all state detectors efficiently (0.3-0.5s total)
+        text = self.ocr.extract_text(screen_image).lower()
+
         # 1. Homescreen check
-        is_home, h_markers = self.is_homescreen_open(screen_image)
+        is_home, h_markers = self.is_homescreen_open(screen_image, text=text)
         if is_home:
             return "homescreen", h_markers
 
         # 2. Captcha / security verification check
-        if self.check_for_captcha(screen_image):
+        if self.check_for_captcha(screen_image, text=text):
             return "popup", ["captcha_or_verification"]
 
         # 3. Interrupting modal popup check
-        popup = self.detect_popup(screen_image)
+        popup = self.detect_popup(screen_image, text=text)
         if popup:
             return "popup", [popup]
 
-        # 4. Comments drawer check
-        is_comm, c_markers = self.is_comment_section_open(screen_image)
+        # 4. "Add comment" section / virtual keyboard check (prioritized before comment sheet)
+        is_kb, kb_markers = self.is_comment_input_open(screen_image, text=text)
+        if is_kb:
+            return "comment_input", kb_markers
+
+        # 5. Comments drawer check
+        is_comm, c_markers = self.is_comment_section_open(screen_image, text=text)
         if is_comm:
             return "comments", c_markers
 
-        # 5. Share sheet check
-        is_share, s_markers = self.is_share_sheet_open(screen_image)
+        # 6. Share sheet check
+        is_share, s_markers = self.is_share_sheet_open(screen_image, text=text)
         if is_share:
             return "share", s_markers
 
-        # 6. Story player check
-        is_story, st_markers = self.is_story_open(screen_image)
+        # 7. Story player check
+        is_story, st_markers = self.is_story_open(screen_image, text=text)
         if is_story:
             return "story", st_markers
 
-        # 7. Profile page check
-        is_prof, p_markers = self.is_profile_page_open(screen_image)
+        # 8. Profile page check
+        is_prof, p_markers = self.is_profile_page_open(screen_image, text=text)
         if is_prof:
             return "profile", p_markers
 
-        # 8. Search page check
-        is_srch, sr_markers = self.is_search_page_open(screen_image)
+        # 9. Search page check
+        is_srch, sr_markers = self.is_search_page_open(screen_image, text=text)
         if is_srch:
             return "search", sr_markers
 
-        # 9. Clean video feed check
-        is_tt, tt_markers = self.is_tiktok_open(screen_image)
+        # 10. Clean video feed check
+        is_tt, tt_markers = self.is_tiktok_open(screen_image, text=text)
         if is_tt:
-            text = self.ocr.extract_text(screen_image).lower()
-            if "for you" in text or "для вас" in text:
+            if any(term in text for term in ["for you", "foryou", "для вас", "following"]):
                 return "feed", tt_markers
             else:
                 return "other_tab", tt_markers

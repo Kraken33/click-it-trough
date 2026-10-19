@@ -261,24 +261,27 @@ class SessionRunner:
         """
         for attempt in range(1, max_retries + 1):
             self._broadcast_status(f"Closing comment section (attempt {attempt}/{max_retries})...")
+            # Dismiss keyboard first in case comment input field is focused
+            self.wda.dismiss_keyboard()
             self.gesture.close_comments_drawer()
             time.sleep(1.2)
 
             screen = self.device_manager.get_screen()
             if screen:
                 is_open, markers = self.detector.is_comment_section_open(screen)
-                if not is_open:
+                is_kb, _ = self.detector.is_comment_input_open(screen)
+                if not is_open and not is_kb:
                     self._broadcast_status("Comment drawer verified closed via OCR.")
                     logger.info("Comment section closed successfully, verified via OCR.")
                     return True
                 else:
-                    logger.warning(f"Comment drawer still detected on screen via OCR [{', '.join(markers)}], retrying close...")
+                    logger.warning(f"Comment drawer/input still detected on screen via OCR [{', '.join(markers)}], retrying close...")
                     # Fallback dismissal tap
                     w, h = self.gesture.screen_width, self.gesture.screen_height
                     if attempt % 2 == 1:
                         self.wda.tap(w * 0.5, h * 0.15)
                     else:
-                        self.wda.tap(w * 0.935, h * 0.33)
+                        self.wda.tap(w * 0.935, h * 0.38)
             time.sleep(0.5)
 
         self._broadcast_status("Comment drawer close attempted.")
@@ -309,8 +312,17 @@ class SessionRunner:
 
             self._broadcast_status(f"Recovery: Detected '{state}' {marker_str}. Returning to video feed...")
 
-            if state == "comments":
+            if state in ("comment_input", "keyboard"):
+                # "Add comment" section opened with keyboard
+                self.wda.dismiss_keyboard()
+                # Tap upper dimmed video backdrop to drop keyboard / unfocus input field
+                self.wda.tap(w * 0.50, h * 0.15)
+                time.sleep(0.5)
+                # Dismiss remaining comment drawer if present
+                self.gesture.close_comments_drawer()
+            elif state == "comments":
                 # Close comment sheet drawer
+                self.wda.dismiss_keyboard()
                 self.gesture.close_comments_drawer()
             elif state == "share":
                 # Dismiss share sheet by tapping upper dimmed video backdrop

@@ -266,6 +266,19 @@ class WDAClient:
             )
         return resp.status_code == 200
 
+    def dismiss_keyboard(self) -> bool:
+        """Dismisses the on-screen keyboard via native WDA /wda/keyboard/dismiss endpoint."""
+        try:
+            session_id = self.ensure_session()
+            resp = self.http.post(
+                self._url(f"/session/{session_id}/wda/keyboard/dismiss"),
+                timeout=self.timeout,
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.debug(f"Error dismissing keyboard via WDA: {e}")
+            return False
+
     def get_window_size(self) -> Tuple[int, int]:
         """Returns (width, height) of the device screen in UI points."""
         if self._window_size:

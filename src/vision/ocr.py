@@ -12,7 +12,7 @@ class VisionOCR:
     Operates locally on macOS with high accuracy and low latency.
     """
 
-    def __init__(self, recognition_level: str = "accurate"):
+    def __init__(self, recognition_level: str = "fast"):
         self.recognition_level = recognition_level
         self._has_vision = False
         try:
@@ -53,10 +53,10 @@ class VisionOCR:
             request = self._vision.VNRecognizeTextRequest.alloc().init()
             if self.recognition_level == "fast":
                 request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelFast)
+                request.setUsesLanguageCorrection_(False)
             else:
                 request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelAccurate)
-
-            request.setUsesLanguageCorrection_(True)
+                request.setUsesLanguageCorrection_(True)
 
             # Execute Request Handler
             handler = self._vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
@@ -102,8 +102,12 @@ class VisionOCR:
                 return []
 
             request = self._vision.VNRecognizeTextRequest.alloc().init()
-            request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelAccurate)
-            request.setUsesLanguageCorrection_(True)
+            if self.recognition_level == "fast":
+                request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelFast)
+                request.setUsesLanguageCorrection_(False)
+            else:
+                request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelAccurate)
+                request.setUsesLanguageCorrection_(True)
 
             handler = self._vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
             success, error = handler.performRequests_error_([request], None)
