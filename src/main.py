@@ -159,5 +159,83 @@ def warm(
     console.print("[bold green]Session completed.[/bold green]")
 
 
+@app.command()
+def test_screen(
+    config_file: str = typer.Option("config/default_config.yaml", help="Path to config file"),
+    recover: bool = typer.Option(False, "--recover", "-r", help="Automatically attempt recovery to FYP if not on feed"),
+):
+    """
+    Analyzes the current iPhone screen: detects interface type (feed, likes list, comments,
+    shop, sound, camera, live, profile, search, wrong tab, popup, homescreen) and tests recovery.
+    """
+    with open(config_file, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    from src.bridge.device_manager import DeviceManager
+    from src.vision.detector import ScreenDetector
+    from src.vision.ocr import VisionOCR
+
+    console.print(Panel.fit("[bold cyan]Screen Interface Analysis & Diagnostics[/bold cyan]"))
+    mgr = DeviceManager(wda_url=cfg.get("device", {}).get("wda_url", "http://localhost:8100"))
+    screen = mgr.get_screen()
+    if not screen:
+        console.print("[bold red]❌ Could not capture screen from device. Ensure WDA is running.[/bold red]")
+        raise typer.Exit(1)
+
+    ocr = VisionOCR()
+    detector = ScreenDetector(ocr)
+
+    state, markers = detector.detect_screen_state(screen)
+    metrics = detector.extract_sidebar_metrics(screen)
+
+    table = Table(title="Screen Detection Result")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="bold")
+
+    table.add_row("Detected State", f"[bold green]{state}[/bold green]" if state == "feed" else f"[bold yellow]{state}[/bold yellow]")
+    table.add_row("Matched Markers", ", ".join(markers) if markers else "[dim]None[/dim]")
+    table.add_row("Sidebar Metrics", str(metrics) if metrics else "[dim]None detected[/dim]")
+    console.print(table)
+
+    if state == "feed":
+        console.print("[bold green]✅ Screen is already on clean FYP video feed.[/bold green]")
+        return
+
+    if recover:
+        console.print(f"[yellow]Executing return-to-FYP recovery from state '{state}'...[/yellow]")
+        from src.engine.session_runner import SessionRunner
+        runner = SessionRunner(config=cfg, device_manager=mgr)
+        ok, final_state = runner.recover_to_feed(max_attempts=3)
+        if ok:
+            console.print(f"[bold green]✅ Successfully recovered to FYP video feed (state='{final_state}')![/bold green]")
+        else:
+            console.print(f"[bold red]❌ Recovery failed: remaining state is '{final_state}'[/bold red]")
+
+
+@app.command()
+def recover_now(
+    config_file: str = typer.Option("config/default_config.yaml", help="Path to config file"),
+):
+    """
+    Executes immediate recovery from any screen/interface back to the clean TikTok FYP feed.
+    """
+    test_screen(config_file=config_file, recover=True)
+
+
+@app.command()
+def test_live_recovery(
+    config_file: str = typer.Option("config/default_config.yaml", help="Path to config file"),
+):
+    """
+    Runs automated on-phone test: opens all key TikTok interfaces (comments, keyboard,
+    share sheet, profile, search, camera, tabs, sound) and verifies recovery to FYP.
+    """
+    from tests.test_live_phone_recovery import LivePhoneRecoveryTester
+    tester = LivePhoneRecoveryTester(config_path=config_file)
+    if not tester.check_prerequisites():
+        raise typer.Exit(1)
+    tester.run_all_interface_tests()
+
+
 if __name__ == "__main__":
     app()

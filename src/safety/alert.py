@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from typing import Optional
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -59,3 +60,27 @@ class SafetySentinel:
                 logger.debug(f"Failed to play system sound: {e}")
 
         return filepath
+
+    def trigger_alert(self, message: str = "Unrecoverable screen state", screen_image: Optional[Image.Image] = None) -> str:
+        """Issues an alert with sound and native macOS notification for unrecoverable errors."""
+        logger.warning(f"SafetySentinel alert: {message}")
+        if screen_image:
+            return self.trigger_captcha_alert(screen_image)
+
+        if self.macos_notification:
+            try:
+                apple_script = (
+                    f'display notification "{message}" '
+                    'with title "TikTok Bot Alert" sound name "Sosumi"'
+                )
+                subprocess.run(["osascript", "-e", apple_script], check=False)
+            except Exception as e:
+                logger.debug(f"Failed to trigger macOS notification: {e}")
+
+        if self.play_sound:
+            try:
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Sosumi.aiff"])
+            except Exception as e:
+                logger.debug(f"Failed to play system sound: {e}")
+
+        return message

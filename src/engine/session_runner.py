@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import threading
 import time
@@ -7,6 +8,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
+from PIL import Image
 
 from ..bridge.device_manager import DeviceManager
 from ..physics.gesture import BiometricGestureEngine
@@ -227,6 +229,18 @@ class SessionRunner:
         self._broadcast_status("App close attempted.")
         return False
 
+    def restart_app(self) -> bool:
+        """Cleanly terminates and re-launches TikTok app."""
+        bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
+        self._broadcast_status("Restarting TikTok cleanly...")
+        logger.info(f"Restarting TikTok app ({bundle_id})...")
+        try:
+            self.wda.terminate_app(bundle_id)
+        except Exception as e:
+            logger.debug(f"Error terminating app during restart: {e}")
+        time.sleep(1.2)
+        return self.ensure_app_open(max_retries=3)
+
     def open_comments_verified(self, max_retries: int = 3) -> bool:
         """
         Taps comment icon and uses OCR to verify that the comment drawer/sheet
@@ -287,16 +301,26 @@ class SessionRunner:
         self._broadcast_status("Comment drawer close attempted.")
         return False
 
-    def recover_to_feed(self, max_attempts: int = 3) -> Tuple[bool, str]:
+    def _tap_for_you_tab(self, screen: Optional[Image.Image] = None):
+        """Taps the For You tab in the top header."""
+        w, h = self.gesture.screen_width, self.gesture.screen_height
+        # In modern multi-tab layout ('LIVE Community Following Shop For You [Search]'),
+        # 'For You' is centered at cx ~ 0.80, cy ~ 0.074.
+        self.wda.tap(w * 0.80, h * 0.074)
+
+    def recover_to_feed(self, max_attempts: int = 5) -> Tuple[bool, str]:
         """
-        Detects what page or overlay the device is currently on (comments, share sheet,
-        story, user profile, search, popup, or alternative tab) and executes the
-        appropriate targeted actions to safely return to the TikTok video feed.
-        Returns (is_recovered_to_feed, final_state_description).
+        Closed-Loop Hierarchical UI State Machine:
+        At each step, captures screen, classifies screen state using OCR observations,
+        queries the page-specific layout model to resolve exact target coordinates,
+        performs one targeted action, and immediately re-evaluates the screen until
+        clean FYP video feed is reached.
+        If an 'unknown' screen is encountered, immediately triggers strict assertion
+        failure and persists screenshot to logs/unrecognized_screens/.
         """
         w, h = self.gesture.screen_width, self.gesture.screen_height
 
-        for attempt in range(1, max_attempts + 1):
+        for step in range(1, max_attempts + 1):
             screen = self.device_manager.get_screen()
             if not screen:
                 time.sleep(1.0)
@@ -304,78 +328,185 @@ class SessionRunner:
 
             state, markers = self.detector.detect_screen_state(screen)
             marker_str = f"[{', '.join(markers[:2])}]" if markers else ""
-            logger.info(f"Screen state detection (attempt {attempt}/{max_attempts}): '{state}' {marker_str}")
 
             if state == "feed":
                 self._broadcast_status("Confirmed on video feed ✅")
+                logger.info(f"[Step {step}] Confirmed on video feed ✅")
                 return True, "feed"
 
-            self._broadcast_status(f"Recovery: Detected '{state}' {marker_str}. Returning to video feed...")
+            if state == "unknown":
+                # Strict Assertion Failure on Unknown Screens
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                os.makedirs("logs/unrecognized_screens", exist_ok=True)
+                save_path = f"logs/unrecognized_screens/unrecognized_{timestamp}.png"
+                screen.save(save_path)
+                logger.error(
+                    f"[Step {step}] [CRITICAL] Unrecognized screen state detected. "
+                    f"Aborting blind navigation. Saved screenshot to {save_path}"
+                )
+                self.safety.trigger_alert("Unrecognized screen state detected.", screen_image=screen)
+                self.stats.state = SessionState.CAPTCHA_HALTED
+                self._broadcast_status(f"CRITICAL: Unrecognized screen state. Saved to {save_path}")
+                return False, "unknown"
+
+            # Closed-Loop Page Layout Decision
+            action_desc = ""
 
             if state in ("comment_input", "keyboard"):
-                # "Add comment" section opened with keyboard
+                action_desc = "Dismissing keyboard and tapping upper dimmed backdrop"
                 self.wda.dismiss_keyboard()
-                # Tap upper dimmed video backdrop to drop keyboard / unfocus input field
-                self.wda.tap(w * 0.50, h * 0.15)
-                time.sleep(0.5)
-                # Dismiss remaining comment drawer if present
-                self.gesture.close_comments_drawer()
-            elif state == "comments":
-                # Close comment sheet drawer
-                self.wda.dismiss_keyboard()
-                self.gesture.close_comments_drawer()
-            elif state == "share":
-                # Dismiss share sheet by tapping upper dimmed video backdrop
                 self.wda.tap(w * 0.50, h * 0.25)
-            elif state == "story":
-                # Dismiss story viewer by tapping top-right 'X'
-                self.wda.tap(w * 0.93, h * 0.09)
-            elif state == "profile":
-                if markers and "profile_tab" in markers:
-                    # Own profile bottom tab is active: tap bottom Home tab to return to feed
-                    self.wda.tap(w * 0.10, h * 0.95)
+                time.sleep(0.4)
+                self.gesture.close_comments_drawer()
+
+            elif state == "likes_list":
+                action_desc = "Dismissing likes list modal via upper backdrop tap"
+                self.wda.tap(w * 0.50, h * 0.18)
+                time.sleep(0.4)
+                self.gesture.close_comments_drawer()
+
+            elif state == "comments":
+                action_desc = "Closing comment sheet drawer"
+                self.wda.dismiss_keyboard()
+                self.gesture.close_comments_drawer()
+                self.wda.tap(w * 0.50, h * 0.18)
+
+            elif state == "share":
+                action_desc = "Dismissing share sheet via upper backdrop tap"
+                self.wda.tap(w * 0.50, h * 0.25)
+                time.sleep(0.4)
+                self.gesture.close_comments_drawer()
+
+            elif state == "tako":
+                action_desc = "TikTok Tako drawer: Dismissing keyboard and tapping upper backdrop at (0.50, 0.15)"
+                self.wda.dismiss_keyboard()
+                self.wda.tap(w * 0.50, h * 0.15)
+                time.sleep(0.4)
+                self.gesture.close_comments_drawer()
+
+            elif state == "shop":
+                for_you_coord = self.detector.find_button_coordinate(
+                    screen, r"for you|foryou|для вас", region=(0.60, 0.03, 0.95, 0.15)
+                )
+                if for_you_coord:
+                    action_desc = f"Shop active: Tapping OCR-detected 'For You' tab at ({for_you_coord[0]*w:.1f}, {for_you_coord[1]*h:.1f})"
+                    self.wda.tap(for_you_coord[0] * w, for_you_coord[1] * h)
                 else:
-                    # Author profile opened: edge-swipe right and tap top-left '<' arrow
-                    self.wda.press_and_drag_with_velocity(w * 0.05, h * 0.50, w * 0.75, h * 0.50, velocity=2600.0)
-                    self.wda.tap(w * 0.08, h * 0.07)
+                    action_desc = "Shop active: Tapping 'For You' tab at (0.80, 0.074)"
+                    self._tap_for_you_tab()
+
+            elif state == "sound":
+                action_desc = "Sound detail page: Tapping top-left back chevron at (0.06, 0.073)"
+                self.wda.tap(w * 0.06, h * 0.073)
+
+            elif state == "scan":
+                action_desc = "QR scanner: Tapping top-left back chevron"
+                self.wda.tap(w * 0.08, h * 0.073)
+
+            elif state == "camera":
+                action_desc = "Camera screen: Tapping top-left close 'X' at (0.075, 0.105)"
+                self.wda.dismiss_keyboard()
+                self.wda.tap(w * 0.075, h * 0.105)
+
+            elif state == "live":
+                action_desc = "LIVE broadcast: Tapping top-right close 'X'"
+                self.wda.tap(w * 0.95, h * 0.07)
+
+            elif state == "story":
+                action_desc = "Story player: Tapping top-right close 'X'"
+                self.wda.tap(w * 0.93, h * 0.09)
+
+            elif state == "profile":
+                self.wda.dismiss_keyboard()
+                if markers and "profile_tab" in markers:
+                    home_coord = self.detector.find_button_coordinate(
+                        screen, r"home|головна|главная", region=(0.0, 0.88, 0.35, 1.0)
+                    )
+                    home_x = home_coord[0] * w if home_coord else w * 0.10
+                    action_desc = f"Own profile tab: Tapping Home tab at ({home_x:.1f}, {h * 0.955:.1f})"
+                    self.wda.tap(home_x, h * 0.955)
+                else:
+                    action_desc = "Author profile: Tapping top-left back chevron at (0.06, 0.073)"
+                    self.wda.tap(w * 0.06, h * 0.073)
+
             elif state == "search":
-                # Search opened: tap top-left back arrow or cancel
-                self.wda.tap(w * 0.08, h * 0.07)
-                self.wda.tap(w * 0.92, h * 0.07)
+                self.wda.dismiss_keyboard()
+                if markers and "discover_sheet" in markers:
+                    action_desc = "Discover sheet / overlay: Tapping top-right close 'X' at (0.93, 0.073)"
+                    self.wda.tap(w * 0.93, h * 0.073)
+                else:
+                    action_desc = "Search page: Dismissing keyboard and tapping top-left back chevron at (0.06, 0.073)"
+                    self.wda.tap(w * 0.06, h * 0.073)
+
+            elif state == "feed_wrong_tab":
+                for_you_coord = self.detector.find_button_coordinate(
+                    screen, r"for you|foryou|для вас", region=(0.60, 0.03, 0.95, 0.15)
+                )
+                if for_you_coord:
+                    action_desc = f"Wrong feed tab: Tapping OCR-detected 'For You' tab at ({for_you_coord[0]*w:.1f}, {for_you_coord[1]*h:.1f})"
+                    self.wda.tap(for_you_coord[0] * w, for_you_coord[1] * h)
+                else:
+                    action_desc = "Wrong feed tab: Tapping 'For You' tab at (0.80, 0.074)"
+                    self._tap_for_you_tab()
+
             elif state == "popup":
-                popup_type = markers[0] if markers else "generic_modal"
-                dismiss_x, dismiss_y = self.detector.get_dismiss_coordinate(popup_type, w, h)
-                self.wda.tap(dismiss_x, dismiss_y)
+                btn_coord = self.detector.find_button_coordinate(
+                    screen, r"not now|cancel|dismiss|later|не зараз|отмена|позже"
+                )
+                if btn_coord:
+                    action_desc = f"Modal popup: Tapping OCR-detected dismiss button at ({btn_coord[0]*w:.1f}, {btn_coord[1]*h:.1f})"
+                    self.wda.tap(btn_coord[0] * w, btn_coord[1] * h)
+                else:
+                    popup_type = markers[0] if markers else "generic_modal"
+                    dismiss_x, dismiss_y = self.detector.get_dismiss_coordinate(popup_type, w, h)
+                    action_desc = f"Modal popup: Tapping dismiss coordinate ({dismiss_x:.1f}, {dismiss_y:.1f})"
+                    self.wda.tap(dismiss_x, dismiss_y)
+
             elif state == "homescreen":
-                # TikTok was minimized or closed: re-launch app
+                action_desc = "Device on homescreen: Relaunching TikTok"
                 self.ensure_app_open()
+
             else:
-                # 'other_tab' or 'unknown': tap bottom 'Home' tab and top 'For You' tab
-                self.wda.tap(w * 0.10, h * 0.95)
-                time.sleep(0.5)
-                self.wda.tap(w * 0.78, h * 0.074)
+                action_desc = f"Alternative tab '{state}': Tapping Home tab at (0.10, 0.955)"
+                self.wda.dismiss_keyboard()
+                self.wda.tap(w * 0.10, h * 0.955)
 
-            time.sleep(1.2)
+            logger.info(f"[Step {step}/{max_attempts}] Screen: '{state}' {marker_str} -> Action: {action_desc}")
+            self._broadcast_status(f"[Step {step}] '{state}': {action_desc}")
+            time.sleep(0.8)
 
-            # Check if now on feed
-            check_screen = self.device_manager.get_screen()
-            if check_screen:
-                new_state, _ = self.detector.detect_screen_state(check_screen)
-                if new_state == "feed":
+            # Closed-Loop Verification: Immediately re-capture screen and verify state transition
+            post_screen = self.device_manager.get_screen()
+            if post_screen:
+                post_state, _ = self.detector.detect_screen_state(post_screen)
+                if post_state == "feed":
                     self._broadcast_status(f"Successfully recovered from '{state}' to video feed ✅")
-                    logger.info(f"Successfully recovered from '{state}' to video feed.")
+                    logger.info(f"[Step {step}] Verified recovery from '{state}' to 'feed' ✅")
                     return True, state
 
-        # Final fallback: tap Home tab & For You tab
-        self.wda.tap(w * 0.10, h * 0.95)
-        time.sleep(0.6)
-        self.wda.tap(w * 0.78, h * 0.074)
-        time.sleep(1.0)
-        final_screen = self.device_manager.get_screen()
-        if final_screen:
-            final_state, _ = self.detector.detect_screen_state(final_screen)
-            return (final_state == "feed"), final_state
-        return False, "unknown"
+        # Emergency Fallback after max closed-loop steps on known states
+        logger.warning(f"Failed to recover to feed after {max_attempts} closed-loop steps. Executing clean app restart...")
+        self._broadcast_status("Recovery failed: clean restarting TikTok app...")
+        restarted = self.restart_app()
+        if restarted:
+            time.sleep(2.0)
+            self.wda.tap(w * 0.10, h * 0.955)
+            time.sleep(1.0)
+            self._tap_for_you_tab()
+            time.sleep(1.2)
+            final_screen = self.device_manager.get_screen()
+            if final_screen:
+                final_state, _ = self.detector.detect_screen_state(final_screen)
+                if final_state == "feed":
+                    self._broadcast_status("App restart recovered screen to video feed ✅")
+                    return True, "feed"
+
+        logger.error("Screen could not be recovered to FYP even after app restart. Triggering sentinel alert.")
+        curr_screen = self.device_manager.get_screen()
+        self.safety.trigger_alert("Unrecoverable screen state: cannot return to FYP.", screen_image=curr_screen)
+        self.stats.state = SessionState.CAPTCHA_HALTED
+        self._broadcast_status("Screen recovery failed: paused for safety 🛡️")
+        return False, "unrecoverable"
 
     def swipe_next_video_verified(self, max_retries: int = 3) -> Tuple[bool, str]:
         """
@@ -655,6 +786,15 @@ class SessionRunner:
                         time.sleep(0.5)
                         screen_img = self.device_manager.get_screen()
                         if screen_img:
+                            # Pre-dwell guard: ensure we are on clean FYP before dwelling
+                            st, markers = self.detector.detect_screen_state(screen_img)
+                            if st not in ("feed", "unknown"):
+                                logger.warning(f"Screen state '{st}' detected before dwell. Recovering to FYP feed...")
+                                self._broadcast_status(f"Pre-dwell guard: returning from '{st}' to FYP...")
+                                self.recover_to_feed()
+                                screen_img = self.device_manager.get_screen()
+
+                        if screen_img:
                             caption, full_text = self.ocr.extract_full_content(screen_img)
                             is_ad = self.detector.is_sponsored(caption) or self.detector.is_sponsored(full_text)
                             
@@ -764,6 +904,13 @@ class SessionRunner:
                                     break
                                 time.sleep(0.2)
                             self.close_comments_verified()
+                            # Post-interaction guard: ensure comment sheet or keyboard is not lingering
+                            post_comm_screen = self.device_manager.get_screen()
+                            if post_comm_screen:
+                                post_st, _ = self.detector.detect_screen_state(post_comm_screen)
+                                if post_st not in ("feed", "unknown"):
+                                    logger.warning(f"Lingering state '{post_st}' after comment view. Recovering...")
+                                    self.recover_to_feed()
                             pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
                             pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
                             time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
