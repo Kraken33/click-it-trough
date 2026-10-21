@@ -1,11 +1,13 @@
 import asyncio
 import base64
+import csv
 import io
 import json
 import logging
 import os
 import threading
 import time
+import traceback
 from typing import Any, Dict, List, Optional
 import yaml
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -16,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from ..bridge.device_manager import DeviceManager
 from ..engine.scheduler import DailyRoutineScheduler
 from ..engine.session_runner import SessionRunner
+from ..storage import SessionDatabase, AnalyticsEngine
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +33,18 @@ def deep_update(base: dict, update: dict) -> dict:
     return base
 
 
-def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
+def create_app(
+    config_path: str = "config/default_config.yaml",
+    device_manager: Optional[DeviceManager] = None,
+    runner: Optional[SessionRunner] = None,
+    config: Optional[dict] = None,
+    db: Optional[SessionDatabase] = None,
+) -> FastAPI:
     # Load configuration
     abs_config_path = os.path.abspath(config_path)
-    with open(abs_config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    if config is None:
+        with open(abs_config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
 
     app = FastAPI(title="TikTok iOS Automation Suite", version="1.0.0")
 
@@ -47,9 +57,10 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
     )
 
     # Core State
-    device_manager = DeviceManager(
-        wda_url=config.get("device", {}).get("wda_url", "http://localhost:8100")
-    )
+    if device_manager is None:
+        device_manager = DeviceManager(
+            wda_url=config.get("device", {}).get("wda_url", "http://localhost:8100")
+        )
     active_websockets: List[WebSocket] = []
 
     def on_runner_update(stats_dict: Dict[str, Any]):
@@ -61,11 +72,21 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
             except Exception:
                 pass
 
-    runner = SessionRunner(
-        config=config,
-        device_manager=device_manager,
-        on_status_update=on_runner_update,
-    )
+    if db is None:
+        db = getattr(runner, "db", None) if runner else None
+    if db is None:
+        db = SessionDatabase()
+    analytics = AnalyticsEngine(db)
+
+    if runner is None:
+        runner = SessionRunner(
+            config=config,
+            device_manager=device_manager,
+            on_status_update=on_runner_update,
+            db=db,
+        )
+    elif getattr(runner, "db", None) is None:
+        runner.db = db
     scheduler = DailyRoutineScheduler(runner=runner, config=config)
 
     app.state.config = config
@@ -74,6 +95,8 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
     app.state.runner = runner
     app.state.scheduler = scheduler
     app.state.active_websockets = active_websockets
+    app.state.db = db
+    app.state.analytics = analytics
 
     @app.on_event("startup")
     async def startup_event():
@@ -203,7 +226,57 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
             "message": "Comment drawer opened & closed successfully (OCR verified)" if (opened and closed) else "Could not verify comments via OCR"
         }
 
-    @app.post("/api/actions/close-app")
+    @app.api_route("/api/actions/test-author-profile", methods=["GET", "POST"])
+    def action_test_author_profile(auto_return: bool = True):
+        try:
+            device_manager.check_connection()
+            runner.wda = device_manager.client
+            runner.gesture.client = device_manager.client
+            size = device_manager.client.get_window_size()
+            if size and len(size) == 2:
+                runner.gesture.screen_width = size[0]
+                runner.gesture.screen_height = size[1]
+        except Exception as e:
+            logger.debug(f"Device update in action_test_author_profile: {e}")
+        try:
+            return runner.test_author_profile(auto_return=auto_return)
+        except Exception as e:
+            logger.exception("Error in action_test_author_profile:")
+            return {"status": "failed", "message": str(e), "traceback": traceback.format_exc()}
+
+    @app.api_route("/api/actions/test-author-follow", methods=["GET", "POST"])
+    def action_test_author_follow():
+        try:
+            device_manager.check_connection()
+            runner.wda = device_manager.client
+            runner.gesture.client = device_manager.client
+            size = device_manager.client.get_window_size()
+            if size and len(size) == 2:
+                runner.gesture.screen_width = size[0]
+                runner.gesture.screen_height = size[1]
+        except Exception as e:
+            logger.debug(f"Device update in action_test_author_follow: {e}")
+        try:
+            return runner.test_author_follow()
+        except Exception as e:
+            logger.exception("Error in action_test_author_follow:")
+            return {"status": "failed", "followed": False, "message": str(e), "traceback": traceback.format_exc()}
+
+    @app.api_route("/api/actions/open-app", methods=["GET", "POST"])
+    def action_open_app():
+        try:
+            device_manager.check_connection()
+            runner.wda = device_manager.client
+            runner.gesture.client = device_manager.client
+            w, h = device_manager.client.get_window_size()
+            runner.gesture.screen_width = w
+            runner.gesture.screen_height = h
+        except Exception:
+            pass
+        opened = runner.ensure_app_open()
+        return {"status": "ok" if opened else "failed", "opened": opened}
+
+    @app.api_route("/api/actions/close-app", methods=["GET", "POST"])
     def action_close_app():
         runner.close_app()
         return {"status": "ok"}
@@ -282,6 +355,99 @@ def create_app(config_path: str = "config/default_config.yaml") -> FastAPI:
         rgb_img = img.convert("RGB") if img.mode != "RGB" else img
         rgb_img.save(buf, format="JPEG", quality=80)
         return Response(content=buf.getvalue(), media_type="image/jpeg")
+
+    # Session History & Analytics Endpoints
+    @app.get("/api/sessions")
+    def get_sessions(limit: int = 50, offset: int = 0):
+        """Returns paginated list of sessions."""
+        cur_db = getattr(app.state, "db", db)
+        return {"sessions": cur_db.get_sessions(limit=limit, offset=offset)}
+
+    @app.get("/api/sessions/{session_id}")
+    def get_session_detail(session_id: str):
+        """Returns session details with full itemized video interaction timeline."""
+        cur_db = getattr(app.state, "db", db)
+        session_data = cur_db.get_session_by_id(session_id)
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return session_data
+
+    @app.delete("/api/sessions/{session_id}")
+    def delete_session(session_id: str):
+        """Deletes a session and its video interactions."""
+        cur_db = getattr(app.state, "db", db)
+        success = cur_db.delete_session(session_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete session")
+        return {"status": "ok", "deleted": session_id}
+
+    @app.delete("/api/sessions")
+    def clear_all_sessions():
+        """Clears all session history."""
+        cur_db = getattr(app.state, "db", db)
+        success = cur_db.clear_all_sessions()
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to clear sessions")
+        return {"status": "ok", "message": "All sessions cleared"}
+
+    @app.get("/api/analytics/summary")
+    def get_analytics_summary():
+        """Returns lifetime KPIs, today's totals, and 4-Factor Account Warming Health Score."""
+        cur_analytics = getattr(app.state, "analytics", analytics)
+        return cur_analytics.get_summary_metrics()
+
+    @app.get("/api/analytics/trends")
+    def get_analytics_trends(limit: int = 20):
+        """Returns chronological session metrics progression and top discovered keywords."""
+        cur_analytics = getattr(app.state, "analytics", analytics)
+        return cur_analytics.get_trends(limit=limit)
+
+    @app.get("/api/sessions/export/download")
+    def export_sessions(format: str = "json"):
+        """Exports session history and video interactions in JSON or CSV format."""
+        cur_db = getattr(app.state, "db", db)
+        sessions = cur_db.get_sessions(limit=1000)
+        if format.lower() == "csv":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                "Session ID", "Start Time", "End Time", "Duration (s)", "State",
+                "Videos Watched", "Likes", "Favorites", "Comments", "Follows",
+                "Ads Skipped", "Niche Matches", "Niche Match Rate", "Exit Reason"
+            ])
+            for s in sessions:
+                writer.writerow([
+                    s.get("session_id"),
+                    s.get("start_time"),
+                    s.get("end_time"),
+                    s.get("duration_seconds"),
+                    s.get("state"),
+                    s.get("videos_watched"),
+                    s.get("likes_count"),
+                    s.get("favorites_count"),
+                    s.get("comments_viewed"),
+                    s.get("follows_count"),
+                    s.get("ads_skipped"),
+                    s.get("niche_matched_count"),
+                    s.get("niche_match_rate"),
+                    s.get("exit_reason"),
+                ])
+            return Response(
+                content=output.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=tiktok_sessions_{int(time.time())}.csv"}
+            )
+        else:
+            detailed_sessions = []
+            for s in sessions:
+                detail = cur_db.get_session_by_id(s["session_id"])
+                if detail:
+                    detailed_sessions.append(detail)
+            return Response(
+                content=json.dumps(detailed_sessions, indent=2),
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename=tiktok_sessions_{int(time.time())}.json"}
+            )
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

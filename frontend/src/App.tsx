@@ -23,7 +23,121 @@ import {
   Search,
   Shuffle,
   UserPlus,
+  BarChart3,
+  Download,
+  History,
+  TrendingUp,
+  ChevronDown,
+  ChevronUp,
+  Trash2,
+  FileText,
 } from 'lucide-react';
+
+interface AnalyticsSummary {
+  lifetime: {
+    total_sessions: number;
+    total_duration_seconds: number;
+    total_videos_watched: number;
+    total_likes: number;
+    total_favorites: number;
+    total_comments: number;
+    total_follows: number;
+    total_ads_skipped: number;
+    total_lives_skipped: number;
+    total_niche_matched: number;
+    like_rate_percent: number;
+    favorite_rate_percent: number;
+    follow_rate_percent: number;
+    niche_match_rate_percent: number;
+    avg_niche_dwell_seconds: number;
+    avg_generic_dwell_seconds: number;
+  };
+  today: {
+    today_sessions: number;
+    today_duration_seconds: number;
+    today_videos_watched: number;
+    today_likes: number;
+    today_favorites: number;
+    today_follows: number;
+  };
+  warming_health_score: {
+    score: number;
+    rating: string;
+    factors: {
+      niche_alignment: { score: number; weight: number; value_percent?: number; details: string };
+      engagement_balance: { score: number; weight: number; value_percent?: number; details: string };
+      dwell_differentiation: { score: number; weight: number; ratio?: number; details: string };
+      session_stability: { score: number; weight: number; clean_rate_percent?: number; details: string };
+    };
+  };
+}
+
+interface AnalyticsTrends {
+  session_progression: Array<{
+    session_id: string;
+    start_time: string;
+    duration_seconds: number;
+    videos_watched: number;
+    likes_count: number;
+    favorites_count: number;
+    follows_count: number;
+    niche_matched_count: number;
+    niche_match_rate: number;
+    state: string;
+  }>;
+  top_keywords: Array<{
+    keyword: string;
+    count: number;
+  }>;
+}
+
+interface VideoInteraction {
+  id: number;
+  session_id: string;
+  timestamp: string;
+  caption: string;
+  matched_keywords: string[];
+  is_niche: boolean;
+  is_ad: boolean;
+  is_live: boolean;
+  dwell_time_seconds: number;
+  action_liked: boolean;
+  action_favorited: boolean;
+  action_comment_viewed: boolean;
+  action_followed: boolean;
+  action_skipped_early: boolean;
+}
+
+interface SavedSession {
+  session_id: string;
+  start_time: string;
+  end_time?: string;
+  duration_seconds: number;
+  state: string;
+  videos_watched: number;
+  likes_count: number;
+  favorites_count: number;
+  comments_viewed: number;
+  follows_count: number;
+  session_follow_target: number;
+  ads_skipped: number;
+  lives_skipped: number;
+  niche_matched_count: number;
+  niche_match_rate: number;
+  target_keywords: string[];
+  exit_reason: string;
+  videos?: VideoInteraction[];
+}
+
+function formatDuration(totalSeconds: number): string {
+  if (!totalSeconds || totalSeconds <= 0) return '0s';
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
 
 interface SessionStats {
   session_id: string;
@@ -208,7 +322,14 @@ export default function App() {
   const [isFetchingScreen, setIsFetchingScreen] = useState<boolean>(false);
   const [config, setConfig] = useState<any>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(15);
-  const [activeTab, setActiveTab] = useState<'activity' | 'niche' | 'behavior' | 'schedule'>('activity');
+  const [activeTab, setActiveTab] = useState<'activity' | 'niche' | 'behavior' | 'schedule' | 'analytics'>('activity');
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [analyticsTrends, setAnalyticsTrends] = useState<AnalyticsTrends | null>(null);
+  const [sessionsList, setSessionsList] = useState<SavedSession[]>([]);
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [sessionDetails, setSessionDetails] = useState<Record<string, SavedSession>>({});
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState<boolean>(false);
+  const [isLoadingSessionDetail, setIsLoadingSessionDetail] = useState<boolean>(false);
   const [activityLogs, setActivityLogs] = useState<Array<{ time: string; msg: string; type: string }>>([]);
   const [newKeyword, setNewKeyword] = useState('');
   const [newSeedTerm, setNewSeedTerm] = useState('');
@@ -341,6 +462,87 @@ export default function App() {
       }
     } catch (e) {
       console.debug('Config fetch error', e);
+    }
+  };
+
+  const fetchAnalyticsData = async () => {
+    setIsLoadingAnalytics(true);
+    try {
+      const [sumRes, trRes, sessRes] = await Promise.all([
+        fetch('/api/analytics/summary'),
+        fetch('/api/analytics/trends'),
+        fetch('/api/sessions?limit=50'),
+      ]);
+      if (sumRes.ok) {
+        const sumData = await sumRes.json();
+        setAnalyticsSummary(sumData);
+      }
+      if (trRes.ok) {
+        const trData = await trRes.json();
+        setAnalyticsTrends(trData);
+      }
+      if (sessRes.ok) {
+        const sessData = await sessRes.json();
+        setSessionsList(sessData.sessions || []);
+      }
+    } catch (e) {
+      console.error('Failed to fetch analytics:', e);
+    } finally {
+      setIsLoadingAnalytics(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'analytics') {
+      fetchAnalyticsData();
+    }
+  }, [activeTab]);
+
+  const handleToggleExpandSession = async (sessionId: string) => {
+    if (expandedSessionId === sessionId) {
+      setExpandedSessionId(null);
+      return;
+    }
+    setExpandedSessionId(sessionId);
+    if (!sessionDetails[sessionId]) {
+      setIsLoadingSessionDetail(true);
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSessionDetails((prev) => ({ ...prev, [sessionId]: data }));
+        }
+      } catch (e) {
+        console.error('Failed to load session details:', e);
+      } finally {
+        setIsLoadingSessionDetail(false);
+      }
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`Delete session record ${sessionId}?`)) return;
+    try {
+      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      fetchAnalyticsData();
+      if (expandedSessionId === sessionId) {
+        setExpandedSessionId(null);
+      }
+    } catch (err) {
+      console.error('Error deleting session:', err);
+    }
+  };
+
+  const handleClearAllSessions = async () => {
+    if (!confirm('Are you sure you want to delete ALL historical sessions and video interaction logs? This cannot be undone.')) return;
+    try {
+      await fetch('/api/sessions', { method: 'DELETE' });
+      fetchAnalyticsData();
+      setExpandedSessionId(null);
+      setSessionDetails({});
+    } catch (err) {
+      console.error('Error clearing sessions:', err);
     }
   };
 
@@ -1235,6 +1437,17 @@ export default function App() {
                 }`}
               >
                 <Calendar className="w-3.5 h-3.5" /> Daily Routine
+              </button>
+
+              <button
+                onClick={() => setActiveTab('analytics')}
+                className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-t-xl transition ${
+                  activeTab === 'analytics'
+                    ? 'bg-[#12131a] text-cyan-400 border-t border-x border-gray-800 shadow-sm shadow-cyan-500/10'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <BarChart3 className="w-3.5 h-3.5 text-cyan-400" /> Analytics & History
               </button>
             </div>
 
@@ -2358,6 +2571,516 @@ export default function App() {
                       </div>
                       <span className="text-xs text-gray-400">Scheduled</span>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Analytics & Session History Tab */}
+              {activeTab === 'analytics' && (
+                <div className="space-y-6 text-xs">
+                  {/* Top Header Card */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-gray-900 border border-cyan-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-cyan-500/5">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <BarChart3 className="w-4 h-4 text-cyan-400" /> TikTok Algorithm Analytics & Session History
+                      </h3>
+                      <p className="text-[11px] text-gray-400 mt-1 max-w-xl leading-relaxed">
+                        Persistent session records, itemized video interaction logs, and the 4-Factor Account Warming Health Score.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={fetchAnalyticsData}
+                        disabled={isLoadingAnalytics}
+                        className="px-2.5 py-1.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-300 border border-gray-700 text-xs font-medium transition flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAnalytics ? 'animate-spin text-cyan-400' : ''}`} /> Refresh
+                      </button>
+
+                      <button
+                        onClick={() => window.open('/api/sessions/export/download?format=csv', '_blank')}
+                        className="px-2.5 py-1.5 rounded-xl bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-500/40 text-xs font-medium transition flex items-center gap-1.5"
+                      >
+                        <Download className="w-3.5 h-3.5" /> Export CSV
+                      </button>
+
+                      <button
+                        onClick={() => window.open('/api/sessions/export/download?format=json', '_blank')}
+                        className="px-2.5 py-1.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-300 border border-gray-700 text-xs font-medium transition flex items-center gap-1.5"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-purple-400" /> Export JSON
+                      </button>
+
+                      {sessionsList.length > 0 && (
+                        <button
+                          onClick={handleClearAllSessions}
+                          className="px-2.5 py-1.5 rounded-xl bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 border border-rose-500/30 text-xs font-medium transition flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Clear History
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 4-Factor Account Warming Health Score Hero Banner */}
+                  {analyticsSummary && (
+                    <div className="p-5 rounded-2xl bg-[#151722] border border-gray-800/90 flex flex-col md:flex-row gap-6 items-stretch">
+                      {/* Left: Overall Health Score Gauge */}
+                      <div className="md:w-1/3 flex flex-col justify-center items-center text-center p-4 rounded-xl bg-black/40 border border-gray-800/70">
+                        <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">
+                          Account Warming Health Score
+                        </span>
+
+                        <div className="my-3 relative flex items-center justify-center">
+                          <div
+                            className={`w-28 h-28 rounded-full border-4 flex flex-col items-center justify-center shadow-lg transition ${
+                              analyticsSummary.warming_health_score.score >= 80
+                                ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10 shadow-emerald-500/20'
+                                : analyticsSummary.warming_health_score.score >= 65
+                                ? 'border-cyan-500 text-cyan-400 bg-cyan-500/10 shadow-cyan-500/20'
+                                : analyticsSummary.warming_health_score.score >= 50
+                                ? 'border-amber-500 text-amber-400 bg-amber-500/10 shadow-amber-500/20'
+                                : 'border-rose-500 text-rose-400 bg-rose-500/10 shadow-rose-500/20'
+                            }`}
+                          >
+                            <span className="text-3xl font-extrabold tracking-tight">
+                              {analyticsSummary.warming_health_score.score}
+                            </span>
+                            <span className="text-[10px] text-gray-400 font-medium">/ 100</span>
+                          </div>
+                        </div>
+
+                        <span
+                          className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                            analyticsSummary.warming_health_score.score >= 80
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : analyticsSummary.warming_health_score.score >= 65
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                              : analyticsSummary.warming_health_score.score >= 50
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                          }`}
+                        >
+                          {analyticsSummary.warming_health_score.rating}
+                        </span>
+
+                        <p className="text-[10px] text-gray-500 mt-2.5 max-w-[200px] leading-tight">
+                          Weighted composite index assessing FYP algorithm tuning & human-like dwell behavior.
+                        </p>
+                      </div>
+
+                      {/* Right: 4-Factor Breakdown */}
+                      <div className="md:w-2/3 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        {/* Factor 1: Niche Alignment */}
+                        <div className="p-3.5 rounded-xl bg-gray-900/50 border border-gray-800 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                                <Tag className="w-3.5 h-3.5 text-cyan-400" /> Niche Alignment
+                              </span>
+                              <span className="text-[10px] text-cyan-400 font-mono font-bold">
+                                40% Weight • {analyticsSummary.warming_health_score.factors.niche_alignment.score} pts
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden my-2">
+                              <div
+                                className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full"
+                                style={{ width: `${Math.min(100, analyticsSummary.warming_health_score.factors.niche_alignment.score)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-gray-400 leading-tight">
+                            {analyticsSummary.warming_health_score.factors.niche_alignment.details}
+                          </span>
+                        </div>
+
+                        {/* Factor 2: Engagement Balance */}
+                        <div className="p-3.5 rounded-xl bg-gray-900/50 border border-gray-800 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                                <Heart className="w-3.5 h-3.5 text-pink-400" /> Engagement Balance
+                              </span>
+                              <span className="text-[10px] text-pink-400 font-mono font-bold">
+                                25% Weight • {analyticsSummary.warming_health_score.factors.engagement_balance.score} pts
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden my-2">
+                              <div
+                                className="h-full bg-gradient-to-r from-pink-500 to-rose-500 rounded-full"
+                                style={{ width: `${Math.min(100, analyticsSummary.warming_health_score.factors.engagement_balance.score)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-gray-400 leading-tight">
+                            {analyticsSummary.warming_health_score.factors.engagement_balance.details}
+                          </span>
+                        </div>
+
+                        {/* Factor 3: Dwell Differentiation */}
+                        <div className="p-3.5 rounded-xl bg-gray-900/50 border border-gray-800 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                                <Clock className="w-3.5 h-3.5 text-purple-400" /> Dwell Quality
+                              </span>
+                              <span className="text-[10px] text-purple-400 font-mono font-bold">
+                                20% Weight • {analyticsSummary.warming_health_score.factors.dwell_differentiation.score} pts
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden my-2">
+                              <div
+                                className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full"
+                                style={{ width: `${Math.min(100, analyticsSummary.warming_health_score.factors.dwell_differentiation.score)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-gray-400 leading-tight">
+                            {analyticsSummary.warming_health_score.factors.dwell_differentiation.details}
+                          </span>
+                        </div>
+
+                        {/* Factor 4: Session Stability */}
+                        <div className="p-3.5 rounded-xl bg-gray-900/50 border border-gray-800 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Stability & Safety
+                              </span>
+                              <span className="text-[10px] text-emerald-400 font-mono font-bold">
+                                15% Weight • {analyticsSummary.warming_health_score.factors.session_stability.score} pts
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden my-2">
+                              <div
+                                className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full"
+                                style={{ width: `${Math.min(100, analyticsSummary.warming_health_score.factors.session_stability.score)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-gray-400 leading-tight">
+                            {analyticsSummary.warming_health_score.factors.session_stability.details}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Lifetime KPI Metrics Grid */}
+                  {analyticsSummary && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="p-3.5 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                        <span className="text-[11px] text-gray-400 font-medium">Lifetime Watch Time</span>
+                        <span className="text-xl font-bold text-white mt-1">
+                          {formatDuration(analyticsSummary.lifetime.total_duration_seconds)}
+                        </span>
+                        <span className="text-[10px] text-gray-500 mt-1">
+                          {analyticsSummary.lifetime.total_sessions} completed sessions
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                        <span className="text-[11px] text-gray-400 font-medium">Niche Match Rate</span>
+                        <span className="text-xl font-bold text-cyan-400 mt-1">
+                          {analyticsSummary.lifetime.niche_match_rate_percent}%
+                        </span>
+                        <span className="text-[10px] text-gray-500 mt-1">
+                          {analyticsSummary.lifetime.total_niche_matched} / {analyticsSummary.lifetime.total_videos_watched} videos
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                        <span className="text-[11px] text-gray-400 font-medium">Engagements Total</span>
+                        <span className="text-xl font-bold text-pink-400 mt-1">
+                          {analyticsSummary.lifetime.total_likes + analyticsSummary.lifetime.total_favorites + analyticsSummary.lifetime.total_follows}
+                        </span>
+                        <span className="text-[10px] text-gray-500 mt-1">
+                          {analyticsSummary.lifetime.total_likes} ❤️ • {analyticsSummary.lifetime.total_favorites} ⭐ • {analyticsSummary.lifetime.total_follows} 👤
+                        </span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                        <span className="text-[11px] text-gray-400 font-medium">Average Dwell Time</span>
+                        <span className="text-xl font-bold text-purple-400 mt-1">
+                          {analyticsSummary.lifetime.avg_niche_dwell_seconds}s
+                        </span>
+                        <span className="text-[10px] text-gray-500 mt-1">
+                          vs {analyticsSummary.lifetime.avg_generic_dwell_seconds}s generic FYP
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Trends & Keyword Discovery Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Recent Sessions Progression */}
+                    <div className="p-4 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                      <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5 mb-3">
+                        <TrendingUp className="w-3.5 h-3.5 text-cyan-400" /> FYP Niche Alignment Progression
+                      </span>
+
+                      {analyticsTrends && analyticsTrends.session_progression.length > 0 ? (
+                        <div className="space-y-2.5">
+                          {analyticsTrends.session_progression.slice(-6).map((s, idx) => (
+                            <div key={idx} className="flex items-center gap-3">
+                              <span className="text-[10px] text-gray-400 font-mono w-24 truncate">
+                                {s.session_id.replace('sess_', '')}
+                              </span>
+                              <div className="flex-1 h-3 bg-gray-800 rounded-full overflow-hidden flex">
+                                <div
+                                  className="h-full bg-gradient-to-r from-cyan-500 to-pink-500 rounded-full"
+                                  style={{ width: `${Math.round((s.niche_match_rate || 0) * 100)}%` }}
+                                />
+                              </div>
+                              <span className="text-[11px] font-mono text-cyan-300 w-12 text-right">
+                                {Math.round((s.niche_match_rate || 0) * 100)}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-gray-500 py-3 text-center">
+                          Progression curve will appear after your first sessions.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Top Discovered Keywords */}
+                    <div className="p-4 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                      <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5 mb-3">
+                        <Tag className="w-3.5 h-3.5 text-pink-400" /> Most Frequent FYP Keywords & Hashtags
+                      </span>
+
+                      {analyticsTrends && analyticsTrends.top_keywords.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {analyticsTrends.top_keywords.map((kw, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2.5 py-1 rounded-lg bg-pink-500/10 border border-pink-500/20 text-pink-300 text-[11px] font-medium flex items-center gap-1.5"
+                            >
+                              <span>#{kw.keyword}</span>
+                              <span className="px-1.5 py-0.2 bg-pink-500/20 rounded-md text-[9px] font-mono text-pink-200">
+                                {kw.count}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-gray-500 py-3 text-center">
+                          Keywords identified via Apple Vision OCR will populate here.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Detailed Sessions History & Video Inspector */}
+                  <div className="p-4 rounded-xl bg-gray-900/40 border border-gray-800 flex flex-col">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                        <History className="w-3.5 h-3.5 text-cyan-400" /> Session History & Video Inspector
+                      </span>
+                      <span className="text-[11px] text-gray-400">
+                        {sessionsList.length} recorded {sessionsList.length === 1 ? 'session' : 'sessions'}
+                      </span>
+                    </div>
+
+                    {sessionsList.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <p className="text-xs">No saved sessions yet.</p>
+                        <p className="text-[11px] text-gray-600 mt-1">
+                          Start a session from the Activity tab to automatically log videos and interactions.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {sessionsList.map((sess) => {
+                          const isExpanded = expandedSessionId === sess.session_id;
+                          const detail = sessionDetails[sess.session_id];
+
+                          return (
+                            <div
+                              key={sess.session_id}
+                              className="rounded-xl border border-gray-800 bg-[#101118] overflow-hidden transition"
+                            >
+                              {/* Session Header Row */}
+                              <div
+                                onClick={() => handleToggleExpandSession(sess.session_id)}
+                                className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer hover:bg-gray-900/60 transition select-none"
+                              >
+                                <div className="flex items-center gap-3">
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-4 h-4 text-cyan-400 flex-shrink-0" />
+                                  ) : (
+                                    <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                                  )}
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono font-bold text-gray-200 text-xs">
+                                        {sess.session_id}
+                                      </span>
+                                      <span
+                                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                                          sess.state === 'COMPLETED'
+                                            ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                                            : sess.state === 'RUNNING'
+                                            ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20 animate-pulse'
+                                            : sess.state === 'CAPTCHA_HALTED'
+                                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                                            : 'bg-gray-800 text-gray-400 border-gray-700'
+                                        }`}
+                                      >
+                                        {sess.state}
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] text-gray-500 block mt-0.5">
+                                      {sess.start_time ? new Date(sess.start_time).toLocaleString() : ''}
+                                      {sess.exit_reason ? ` • ${sess.exit_reason}` : ''}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-4 flex-wrap text-[11px]">
+                                  <div className="flex items-center gap-3 text-gray-300">
+                                    <span className="text-gray-400">
+                                      ⏱️ {formatDuration(sess.duration_seconds)}
+                                    </span>
+                                    <span>
+                                      📱 <strong className="text-white">{sess.videos_watched}</strong> vids
+                                    </span>
+                                    <span className="text-cyan-300">
+                                      🎯 {Math.round((sess.niche_match_rate || 0) * 100)}% niche
+                                    </span>
+                                    <span>
+                                      ❤️ {sess.likes_count} • ⭐ {sess.favorites_count} • 👤 {sess.follows_count}
+                                    </span>
+                                  </div>
+
+                                  <button
+                                    onClick={(e) => handleDeleteSession(sess.session_id, e)}
+                                    title="Delete session"
+                                    className="p-1.5 rounded-lg hover:bg-rose-950/40 text-gray-500 hover:text-rose-400 transition"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Expanded Itemized Video Inspection List */}
+                              {isExpanded && (
+                                <div className="p-4 border-t border-gray-800/80 bg-black/40">
+                                  {isLoadingSessionDetail && !detail ? (
+                                    <div className="flex items-center justify-center py-4 text-gray-400 gap-2">
+                                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                                      Loading video interaction details...
+                                    </div>
+                                  ) : detail && detail.videos && detail.videos.length > 0 ? (
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-[11px] text-left">
+                                        <thead>
+                                          <tr className="border-b border-gray-800 text-gray-500">
+                                            <th className="py-2 px-2.5 font-medium">#</th>
+                                            <th className="py-2 px-2.5 font-medium">Time</th>
+                                            <th className="py-2 px-2.5 font-medium">Caption OCR Snippet</th>
+                                            <th className="py-2 px-2.5 font-medium">Matched Tags</th>
+                                            <th className="py-2 px-2.5 font-medium">Dwell</th>
+                                            <th className="py-2 px-2.5 font-medium">Actions Taken</th>
+                                            <th className="py-2 px-2.5 font-medium">Type</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-800/40">
+                                          {detail.videos.map((vid, vIdx) => (
+                                            <tr key={vid.id || vIdx} className="hover:bg-gray-900/30 transition">
+                                              <td className="py-2 px-2.5 font-mono text-gray-500">{vIdx + 1}</td>
+                                              <td className="py-2 px-2.5 text-gray-400 font-mono whitespace-nowrap">
+                                                {vid.timestamp ? new Date(vid.timestamp).toLocaleTimeString() : ''}
+                                              </td>
+                                              <td className="py-2 px-2.5 text-gray-300 max-w-xs truncate" title={vid.caption}>
+                                                {vid.caption || <span className="text-gray-600 italic">No text extracted</span>}
+                                              </td>
+                                              <td className="py-2 px-2.5">
+                                                {vid.matched_keywords && vid.matched_keywords.length > 0 ? (
+                                                  <div className="flex flex-wrap gap-1">
+                                                    {vid.matched_keywords.map((kw, kIdx) => (
+                                                      <span
+                                                        key={kIdx}
+                                                        className="px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[9px] font-mono"
+                                                      >
+                                                        #{kw}
+                                                      </span>
+                                                    ))}
+                                                  </div>
+                                                ) : (
+                                                  <span className="text-gray-600 text-[10px]">—</span>
+                                                )}
+                                              </td>
+                                              <td className="py-2 px-2.5 font-mono text-purple-300 whitespace-nowrap">
+                                                {vid.dwell_time_seconds}s
+                                              </td>
+                                              <td className="py-2 px-2.5">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                  {vid.action_liked && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 text-[9px] font-semibold flex items-center gap-0.5">
+                                                      ❤️ Like
+                                                    </span>
+                                                  )}
+                                                  {vid.action_favorited && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[9px] font-semibold flex items-center gap-0.5">
+                                                      ⭐ Fav
+                                                    </span>
+                                                  )}
+                                                  {vid.action_comment_viewed && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 text-[9px] font-semibold flex items-center gap-0.5">
+                                                      💬 Comments
+                                                    </span>
+                                                  )}
+                                                  {vid.action_followed && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-semibold flex items-center gap-0.5">
+                                                      👤 Followed
+                                                    </span>
+                                                  )}
+                                                  {vid.action_skipped_early && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 text-[9px] font-semibold flex items-center gap-0.5">
+                                                      ⏩ Skipped
+                                                    </span>
+                                                  )}
+                                                  {!vid.action_liked && !vid.action_favorited && !vid.action_comment_viewed && !vid.action_followed && !vid.action_skipped_early && (
+                                                    <span className="text-gray-600 text-[10px]">Watched</span>
+                                                  )}
+                                                </div>
+                                              </td>
+                                              <td className="py-2 px-2.5 whitespace-nowrap">
+                                                {vid.is_ad ? (
+                                                  <span className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 text-[9px] font-bold">
+                                                    SPONSORED
+                                                  </span>
+                                                ) : vid.is_niche ? (
+                                                  <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 text-[9px] font-bold">
+                                                    NICHE MATCH
+                                                  </span>
+                                                ) : (
+                                                  <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 text-[9px]">
+                                                    GENERIC FYP
+                                                  </span>
+                                                )}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ) : (
+                                    <p className="text-[11px] text-gray-500 py-3 text-center">
+                                      No video interactions recorded for this session.
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

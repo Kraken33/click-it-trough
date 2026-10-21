@@ -40,6 +40,10 @@ niche:
   - electricmobility
   - vsett
   - flipsky
+  - nami
+  - dualtron
+  - ninebot
+  - teverun
   target_keywords:
   - kukirin
   - ausom
@@ -68,6 +72,10 @@ niche:
   - electricmobility
   - vsett
   - flipsky
+  - nami
+  - dualtron
+  - ninebot
+  - teverun
   seed_videos_min: 2
   seed_videos_max: 5
   seed_video_dwell_min_sec: 7
@@ -137,16 +145,16 @@ safety:
   screenshot_dir: logs/captchas
 follow:
   enabled: true
+  watch_profile_videos: true
   min_matched_tags: 2
   follows_per_session_min: 1
   follows_per_session_max: 3
-  follow_probability_min: 0.50
-  follow_probability_max: 0.70
+  follow_probability_min: 0.5
+  follow_probability_max: 0.7
   profile_videos_min: 1
   profile_videos_max: 3
-  profile_video_dwell_min_sec: 5.0
-  profile_video_dwell_max_sec: 10.0
-
+  profile_video_dwell_min_sec: 5
+  profile_video_dwell_max_sec: 10
 scheduler:
   enabled: true
   sessions_per_day: 3

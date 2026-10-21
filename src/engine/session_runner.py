@@ -16,6 +16,7 @@ from ..safety.alert import SafetySentinel
 from ..vision.detector import ScreenDetector
 from ..vision.ocr import VisionOCR
 from .niche_trainer import NicheTrainer
+from ..storage.session_db import SessionDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class SessionRunner:
         config: Dict[str, Any],
         device_manager: Optional[DeviceManager] = None,
         on_status_update: Optional[Callable[[Dict[str, Any]], None]] = None,
+        db: Optional[Any] = None,
     ):
         self.config = config
         self.device_manager = device_manager or DeviceManager(
@@ -67,6 +69,18 @@ class SessionRunner:
         )
         self.wda = self.device_manager.client
         self.on_status_update = on_status_update
+
+        # Session Persistence
+        if db is False:
+            self.db = None
+        elif db is not None:
+            self.db = db
+        else:
+            try:
+                self.db = SessionDatabase()
+            except Exception as e:
+                logger.warning(f"Could not initialize SessionDatabase: {e}")
+                self.db = None
 
         # Vision & Safety Components
         self.ocr = VisionOCR()
@@ -147,6 +161,17 @@ class SessionRunner:
             current_action="Starting session...",
         )
 
+        if self.db:
+            try:
+                self.db.create_session(
+                    session_id=self.stats.session_id,
+                    start_time=self.stats.start_time,
+                    target_keywords=self.trainer.target_keywords,
+                    session_follow_target=follow_target,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record session start in DB: {e}")
+
         self._thread = threading.Thread(
             target=self._run_loop,
             args=(duration_minutes,),
@@ -173,6 +198,13 @@ class SessionRunner:
         (e.g. 'For You', 'Following', 'LIVE', navigation bar) is present on screen.
         Retries launch if not verified.
         """
+        # Fast path: check if app is already open and verified on screen
+        screen = self.device_manager.get_screen()
+        if screen:
+            is_open, markers = self.detector.is_tiktok_open(screen)
+            if is_open:
+                return True
+
         bundle_id = self.config.get("device", {}).get("bundle_id", "com.zhiliaoapp.musically")
         for attempt in range(1, max_retries + 1):
             if self._stop_event.is_set():
@@ -337,13 +369,32 @@ class SessionRunner:
             state, markers = self.detector.detect_screen_state(screen)
             marker_str = f"[{', '.join(markers[:2])}]" if markers else ""
 
-            if state == "feed":
+            if state == "transition":
+                time.sleep(0.4)
+                continue
+
+            if state == "feed" or (self.detector.is_feed_navigation_visible(screen) and state not in ("comment_input", "keyboard", "comments", "share", "likes_list", "tako", "popup", "unknown")):
                 self._broadcast_status("Confirmed on video feed ✅")
                 logger.info(f"[Step {step}] Confirmed on video feed ✅")
                 return True, "feed"
 
             if state == "unknown":
-                # Strict Assertion Failure on Unknown Screens
+                # Double-check: wait 0.5s and re-evaluate to eliminate transient rendering glitches
+                time.sleep(0.5)
+                retry_screen = self.device_manager.get_screen()
+                if retry_screen:
+                    r_state, r_markers = self.detector.detect_screen_state(retry_screen)
+                    if r_state == "feed" or (self.detector.is_feed_navigation_visible(retry_screen) and r_state not in ("comment_input", "keyboard", "comments", "share", "likes_list", "tako", "popup", "unknown")):
+                        self._broadcast_status("Confirmed on video feed ✅")
+                        logger.info(f"[Step {step}] Confirmed on video feed after re-check ✅")
+                        return True, "feed"
+                    if r_state != "unknown":
+                        screen = retry_screen
+                        state = r_state
+                        markers = r_markers
+
+            if state == "unknown":
+                # Strict Assertion Failure on Persistent Unknown Screens
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 os.makedirs("logs/unrecognized_screens", exist_ok=True)
                 save_path = f"logs/unrecognized_screens/unrecognized_{timestamp}.png"
@@ -394,18 +445,31 @@ class SessionRunner:
 
             elif state == "shop":
                 for_you_coord = self.detector.find_button_coordinate(
-                    screen, r"for you|foryou|для вас", region=(0.60, 0.03, 0.95, 0.15)
+                    screen, r"for you|foryou|для вас|für dich", region=(0.60, 0.03, 0.95, 0.15)
+                )
+                home_coord = self.detector.find_button_coordinate(
+                    screen, r"home|startseite|головна|главная", region=(0.0, 0.88, 0.35, 1.0)
                 )
                 if for_you_coord:
                     action_desc = f"Shop active: Tapping OCR-detected 'For You' tab at ({for_you_coord[0]*w:.1f}, {for_you_coord[1]*h:.1f})"
                     self.wda.tap(for_you_coord[0] * w, for_you_coord[1] * h)
+                elif home_coord:
+                    action_desc = f"Shop active: Tapping OCR-detected Home tab at ({home_coord[0]*w:.1f}, {home_coord[1]*h:.1f})"
+                    self.wda.tap(home_coord[0] * w, home_coord[1] * h)
                 else:
                     action_desc = "Shop active: Tapping 'For You' tab at (0.80, 0.074)"
                     self._tap_for_you_tab()
 
             elif state == "sound":
-                action_desc = "Sound detail page: Tapping top-left back chevron at (0.06, 0.073)"
-                self.wda.tap(w * 0.06, h * 0.073)
+                home_coord = self.detector.find_button_coordinate(
+                    screen, r"home|startseite|головна|главная", region=(0.0, 0.88, 0.35, 1.0)
+                )
+                if home_coord:
+                    action_desc = f"Sound page with nav: Tapping OCR-detected Home tab at ({home_coord[0]*w:.1f}, {home_coord[1]*h:.1f})"
+                    self.wda.tap(home_coord[0] * w, home_coord[1] * h)
+                else:
+                    action_desc = "Sound detail page: Tapping top-left back chevron at (0.06, 0.073)"
+                    self.wda.tap(w * 0.06, h * 0.073)
 
             elif state == "scan":
                 action_desc = "QR scanner: Tapping top-left back chevron"
@@ -426,20 +490,28 @@ class SessionRunner:
 
             elif state == "profile":
                 self.wda.dismiss_keyboard()
-                if markers and "profile_tab" in markers:
-                    home_coord = self.detector.find_button_coordinate(
-                        screen, r"home|головна|главная", region=(0.0, 0.88, 0.35, 1.0)
-                    )
-                    home_x = home_coord[0] * w if home_coord else w * 0.10
-                    action_desc = f"Own profile tab: Tapping Home tab at ({home_x:.1f}, {h * 0.955:.1f})"
-                    self.wda.tap(home_x, h * 0.955)
+                home_coord = self.detector.find_button_coordinate(
+                    screen, r"home|startseite|головна|главная", region=(0.0, 0.88, 0.35, 1.0)
+                )
+                if home_coord:
+                    action_desc = f"Profile: Tapping OCR-detected Home tab at ({home_coord[0]*w:.1f}, {home_coord[1]*h:.1f})"
+                    self.wda.tap(home_coord[0] * w, home_coord[1] * h)
+                elif markers and "profile_tab" in markers:
+                    action_desc = f"Own profile tab: Tapping Home tab at ({w * 0.10:.1f}, {h * 0.955:.1f})"
+                    self.wda.tap(w * 0.10, h * 0.955)
                 else:
                     action_desc = "Author profile: Tapping top-left back chevron at (0.06, 0.073)"
                     self.wda.tap(w * 0.06, h * 0.073)
 
             elif state == "search":
                 self.wda.dismiss_keyboard()
-                if markers and "discover_sheet" in markers:
+                cancel_coord = self.detector.find_button_coordinate(
+                    screen, r"cancel|abbrechen|отмена|відміна", region=(0.60, 0.02, 1.0, 0.14)
+                )
+                if cancel_coord:
+                    action_desc = f"Search page: Tapping OCR-detected 'Cancel' at ({cancel_coord[0]*w:.1f}, {cancel_coord[1]*h:.1f})"
+                    self.wda.tap(cancel_coord[0] * w, cancel_coord[1] * h)
+                elif markers and "discover_sheet" in markers:
                     action_desc = "Discover sheet / overlay: Tapping top-right close 'X' at (0.93, 0.073)"
                     self.wda.tap(w * 0.93, h * 0.073)
                 else:
@@ -448,7 +520,7 @@ class SessionRunner:
 
             elif state == "feed_wrong_tab":
                 for_you_coord = self.detector.find_button_coordinate(
-                    screen, r"for you|foryou|для вас", region=(0.60, 0.03, 0.95, 0.15)
+                    screen, r"for you|foryou|для вас|für dich", region=(0.60, 0.03, 0.95, 0.15)
                 )
                 if for_you_coord:
                     action_desc = f"Wrong feed tab: Tapping OCR-detected 'For You' tab at ({for_you_coord[0]*w:.1f}, {for_you_coord[1]*h:.1f})"
@@ -486,11 +558,13 @@ class SessionRunner:
             # Closed-Loop Verification: Immediately re-capture screen and verify state transition
             post_screen = self.device_manager.get_screen()
             if post_screen:
-                post_state, _ = self.detector.detect_screen_state(post_screen)
-                if post_state == "feed":
+                post_state, post_markers = self.detector.detect_screen_state(post_screen)
+                if post_state == "feed" or (self.detector.is_feed_navigation_visible(post_screen) and post_state not in ("comment_input", "keyboard", "comments", "share", "likes_list", "tako", "popup", "unknown")):
                     self._broadcast_status(f"Successfully recovered from '{state}' to video feed ✅")
                     logger.info(f"[Step {step}] Verified recovery from '{state}' to 'feed' ✅")
                     return True, state
+                else:
+                    logger.info(f"[Step {step}] Post-action OCR evaluated screen state as '{post_state}' [{', '.join(post_markers[:2]) if post_markers else ''}]")
 
         # Emergency Fallback after max closed-loop steps on known states
         logger.warning(f"Failed to recover to feed after {max_attempts} closed-loop steps. Executing clean app restart...")
@@ -519,36 +593,39 @@ class SessionRunner:
     def swipe_next_video_verified(self, max_retries: int = 3) -> Tuple[bool, str]:
         """
         Executes swipe to next video and verifies that the video changed
-        by strictly checking that the likes count in the dedicated zone changed.
-        If the video did not change (likes stayed identical or missing), it retries the swipe.
-        If 3 swipe attempts fail, detects current screen state (comments, share, etc.)
-        and recovers back to the video feed.
+        using multi-modal verification (sidebar metrics, visual scene diff, content signature).
+        If the video did not change, it retries the swipe with adaptive fling velocity.
+        If max retries fail, detects current screen state and recovers back to the video feed.
         Returns (has_changed, reason_description).
         """
         before_img = self.device_manager.get_screen()
-        before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
+        if before_img and self.detector.is_transition_frame(before_img):
+            time.sleep(0.4)
+            before_img = self.device_manager.get_screen()
 
-        # If likes aren't detected immediately, wait briefly and retry (UI animation / buffering)
-        if before_likes is None and before_img:
-            for _ in range(3):
-                time.sleep(0.6)
-                before_img = self.device_manager.get_screen()
-                before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
-                if before_likes is not None:
-                    break
+        before_metrics = self.detector.extract_sidebar_metrics(before_img) if before_img else {}
+        before_likes = before_metrics.get("likes")
+        before_sig = self.detector.extract_content_signature(before_img) if before_img else ""
 
-        # If still no likes amount, check if we're on an overlay or wrong tab and recover
-        if before_likes is None and before_img:
+        # Pre-swipe guard: ONLY recover if an actual blocking overlay / non-feed modal is detected
+        if before_img:
             state, markers = self.detector.detect_screen_state(before_img)
-            if state != "feed":
+            blocking_states = (
+                "comment_input", "keyboard", "comments", "share", "profile",
+                "likes_list", "popup", "homescreen", "other_tab", "feed_wrong_tab",
+                "tako", "shop", "camera", "sound", "live", "scan"
+            )
+            if state in blocking_states:
                 logger.warning(
-                    f"No likes in dedicated zone prior to swipe (state='{state}'). Recovering to video feed..."
+                    f"Blocking overlay/state '{state}' detected prior to swipe. Recovering to video feed..."
                 )
                 self._broadcast_status(f"Screen on '{state}', recovering to video feed...")
                 self.recover_to_feed()
-                time.sleep(1.0)
+                time.sleep(0.8)
                 before_img = self.device_manager.get_screen()
-                before_likes = self.detector.extract_likes_amount(before_img) if before_img else None
+                before_metrics = self.detector.extract_sidebar_metrics(before_img) if before_img else {}
+                before_likes = before_metrics.get("likes")
+                before_sig = self.detector.extract_content_signature(before_img) if before_img else ""
 
         last_reason = "No transition detected"
         for attempt in range(1, max_retries + 1):
@@ -559,15 +636,22 @@ class SessionRunner:
             fling_v = 3000.0 if attempt == 1 else (3300.0 + (attempt - 2) * 200.0)
             self.gesture.swipe_next_video(velocity=fling_v)
 
-            # Wait natural video & UI element render time so likes count is fully displayed
-            time.sleep(1.2)
+            # Wait natural video & UI element render time so frame and metrics stabilize
+            time.sleep(1.0)
 
             after_img = self.device_manager.get_screen()
-            if after_img:
+            # If after_img is in mid-transition / buffering, wait 0.4s to stabilize
+            if after_img and self.detector.is_transition_frame(after_img):
+                time.sleep(0.4)
+                after_img = self.device_manager.get_screen()
+
+            if after_img and before_img:
                 changed, reason = self.detector.did_video_change(
-                    before_img or after_img,
+                    before_img,
                     after_img,
+                    before_metrics=before_metrics,
                     before_likes=before_likes,
+                    before_sig=before_sig,
                 )
                 last_reason = reason
                 if changed:
@@ -580,10 +664,10 @@ class SessionRunner:
                     )
                     self._broadcast_status(f"Swipe unconfirmed: {reason}, retrying...")
                     # Advance baseline to current screen so subsequent retry checks against the current video
-                    current_likes = self.detector.extract_likes_amount(after_img)
-                    if current_likes is not None:
-                        before_likes = current_likes
-                        before_img = after_img
+                    before_img = after_img
+                    before_metrics = self.detector.extract_sidebar_metrics(after_img)
+                    before_likes = before_metrics.get("likes")
+                    before_sig = self.detector.extract_content_signature(after_img)
                     time.sleep(0.5)
 
         # 3 swipe attempts failed: detect screen state and initiate recovery back to video feed
@@ -597,20 +681,28 @@ class SessionRunner:
             logger.info(f"Successfully recovered from '{current_state}' back to feed. Executing verified swipe...")
             time.sleep(1.0)
             feed_img = self.device_manager.get_screen()
-            feed_likes = self.detector.extract_likes_amount(feed_img) if feed_img else None
-            if feed_likes is None:
-                time.sleep(0.8)
+            if feed_img and self.detector.is_transition_frame(feed_img):
+                time.sleep(0.4)
                 feed_img = self.device_manager.get_screen()
-                feed_likes = self.detector.extract_likes_amount(feed_img) if feed_img else None
+
+            feed_metrics = self.detector.extract_sidebar_metrics(feed_img) if feed_img else {}
+            feed_likes = feed_metrics.get("likes")
+            feed_sig = self.detector.extract_content_signature(feed_img) if feed_img else ""
 
             self.gesture.swipe_next_video(velocity=3300.0)
-            time.sleep(1.2)
+            time.sleep(1.0)
             post_swipe_img = self.device_manager.get_screen()
-            if post_swipe_img:
+            if post_swipe_img and self.detector.is_transition_frame(post_swipe_img):
+                time.sleep(0.4)
+                post_swipe_img = self.device_manager.get_screen()
+
+            if post_swipe_img and feed_img:
                 changed, reason = self.detector.did_video_change(
-                    feed_img or post_swipe_img,
+                    feed_img,
                     post_swipe_img,
+                    before_metrics=feed_metrics,
                     before_likes=feed_likes,
+                    before_sig=feed_sig,
                 )
                 if changed:
                     self._broadcast_status(f"Video changed after recovery [{reason}]")
@@ -634,6 +726,69 @@ class SessionRunner:
         self._skip_flag.set()
         self._broadcast_status("Skipping current video...")
 
+    def _get_screen_scale(self, screen_img: Optional[Image.Image]) -> Tuple[float, float]:
+        """Calculates retina scale factor (e.g. 2.0 or 3.0) from image pixels to points."""
+        if not screen_img:
+            return 1.0, 1.0
+        gw = getattr(self.gesture, "screen_width", 0)
+        gh = getattr(self.gesture, "screen_height", 0)
+        sx = (screen_img.width / gw) if isinstance(gw, (int, float)) and gw > 0 else 1.0
+        sy = (screen_img.height / gh) if isinstance(gh, (int, float)) and gh > 0 else 1.0
+        return sx, sy
+
+    def _navigate_to_author_profile(self) -> Tuple[bool, Optional[Image.Image]]:
+        """
+        Navigates from FYP video to author profile with closed-loop verification:
+        1. Primary: Horizontal swipe left across the video area.
+        2. Verification: Checks if screen transitioned to 'profile'.
+        3. Fallback for Carousels/Intercepted: If screen remained on 'feed' (carousel/photo mode detected),
+           waits 1.4s animation dwell and taps the author avatar icon once.
+        4. Final Verification: Returns (opened, final_screen).
+        """
+        init_screen = self.device_manager.get_screen()
+        if not init_screen:
+            return False, None
+
+        # Quick check: already on profile?
+        st, _ = self.detector.detect_screen_state(init_screen)
+        if st == "profile":
+            return True, init_screen
+
+        # Primary Action: Horizontal swipe left across video area
+        self._broadcast_status("Swiping left to open author profile...")
+        self.gesture.swipe_to_profile()
+        time.sleep(random.uniform(1.2, 1.4))
+
+        screen1 = self.device_manager.get_screen()
+        if screen1:
+            st1, _ = self.detector.detect_screen_state(screen1)
+            if st1 == "profile":
+                return True, screen1
+
+        # Fallback: Screen remained on feed (carousel / photo mode or swipe intercepted)
+        self._broadcast_status(
+            "Swipe remained on feed (carousel/photo mode detected). Tapping author avatar fallback..."
+        )
+        logger.info("Swipe did not open profile (screen remained on feed). Tapping author avatar icon fallback...")
+        time.sleep(1.4)  # 1.4s animation dwell for carousel slide transition to settle
+
+        curr_screen = screen1 or init_screen
+        avatar_coords = self.detector.find_author_avatar_coords(curr_screen) if curr_screen else None
+        if avatar_coords and curr_screen:
+            scale_x, scale_y = self._get_screen_scale(curr_screen)
+            self.gesture.tap_author_avatar(x=avatar_coords[0] / scale_x, y=avatar_coords[1] / scale_y)
+        else:
+            self.gesture.tap_author_avatar()
+        time.sleep(1.4)
+
+        screen2 = self.device_manager.get_screen()
+        if screen2:
+            st2, _ = self.detector.detect_screen_state(screen2)
+            if st2 == "profile":
+                return True, screen2
+
+        return False, screen2
+
     def _perform_profile_follow_sequence(self, matched_kws: List[str]) -> bool:
         """
         Executes organic author profile visit, watches profile videos, and follows:
@@ -649,31 +804,15 @@ class SessionRunner:
         self._broadcast_status(f"🎯 Matched tags [{', '.join(matched_kws)}]: Visiting author profile...")
         logger.info(f"Initiating profile visit & follow sequence for matched tags: {matched_kws}")
 
-        # Navigate to author profile (swipe or tap avatar)
-        opened = False
-        if random.random() < 0.65:
-            self.gesture.swipe_to_profile()
-        else:
-            self.gesture.tap_author_avatar()
-        time.sleep(random.uniform(1.4, 2.0))
-
-        screen_img = self.device_manager.get_screen()
-        if screen_img:
-            st, _ = self.detector.detect_screen_state(screen_img)
-            if st == "profile":
-                opened = True
-            else:
-                # Retry with avatar tap if swipe didn't trigger profile
-                self.gesture.tap_author_avatar()
-                time.sleep(random.uniform(1.2, 1.8))
-                screen_img = self.device_manager.get_screen()
-                if screen_img:
-                    st, _ = self.detector.detect_screen_state(screen_img)
-                    opened = (st == "profile")
+        # Navigate to author profile with multi-modal fallback
+        opened, screen_img = self._navigate_to_author_profile()
 
         if not opened or not screen_img:
-            logger.warning("Could not navigate to author profile. Recovering to feed...")
+            logger.warning("Could not navigate to author profile. Recovering feed and advancing to next video...")
+            self._broadcast_status("Could not open profile: advancing to next FYP video 👆...")
             self.recover_to_feed()
+            time.sleep(random.uniform(0.6, 1.0))
+            self.swipe_next_video_verified()
             return False
 
         # Check if already followed
@@ -694,63 +833,152 @@ class SessionRunner:
             self.recover_to_feed()
             return False
 
-        # Watch a few videos from creator's profile
-        vid_min = int(follow_cfg.get("profile_videos_min", 1))
-        vid_max = int(follow_cfg.get("profile_videos_max", 3))
-        videos_to_watch = random.randint(min(vid_min, vid_max), max(vid_min, vid_max))
-        dwell_min = float(follow_cfg.get("profile_video_dwell_min_sec", 5.0))
-        dwell_max = float(follow_cfg.get("profile_video_dwell_max_sec", 10.0))
+        # Step 4: Watch creator profile videos before following (if configured)
+        watch_videos = follow_cfg.get("watch_profile_videos", True)
+        if watch_videos:
+            vid_min = int(follow_cfg.get("profile_videos_min", 1))
+            vid_max = int(follow_cfg.get("profile_videos_max", 2))
+            videos_to_watch = random.randint(min(vid_min, vid_max), max(vid_min, vid_max))
+            dwell_min = float(follow_cfg.get("profile_video_dwell_min_sec", 4.0))
+            dwell_max = float(follow_cfg.get("profile_video_dwell_max_sec", 8.0))
 
-        self._broadcast_status(f"Opening creator video grid (watching {videos_to_watch} video{'s' if videos_to_watch > 1 else ''})...")
-        self.gesture.tap_first_profile_video()
-        time.sleep(random.uniform(1.2, 1.8))
+            self._broadcast_status(f"Opening creator video grid (watching {videos_to_watch} video{'s' if videos_to_watch > 1 else ''})...")
+            self.gesture.tap_first_profile_video()
+            time.sleep(random.uniform(1.2, 1.8))
 
-        for v_idx in range(videos_to_watch):
-            if self._stop_event.is_set():
-                break
-            v_dwell = random.uniform(min(dwell_min, dwell_max), max(dwell_min, dwell_max))
-            v_start = time.time()
-            while time.time() - v_start < v_dwell:
-                if self._stop_event.is_set() or self._skip_flag.is_set():
-                    self._skip_flag.clear()
-                    break
-                rem = max(0.0, v_dwell - (time.time() - v_start))
-                self._broadcast_status(f"Watching creator video {v_idx + 1}/{videos_to_watch} ({rem:.1f}s remaining)")
-                time.sleep(0.3)
+            post_grid_screen = self.device_manager.get_screen()
+            grid_st, _ = self.detector.detect_screen_state(post_grid_screen) if post_grid_screen else ("unknown", [])
+            # Only run video dwell if the screen actually navigated away from profile to a video player
+            if grid_st != "profile":
+                for v_idx in range(videos_to_watch):
+                    if self._stop_event.is_set():
+                        break
+                    v_dwell = random.uniform(min(dwell_min, dwell_max), max(dwell_min, dwell_max))
+                    v_start = time.time()
+                    while time.time() - v_start < v_dwell:
+                        if self._stop_event.is_set() or self._skip_flag.is_set():
+                            self._skip_flag.clear()
+                            break
+                        rem = max(0.0, v_dwell - (time.time() - v_start))
+                        self._broadcast_status(f"Watching creator video {v_idx + 1}/{videos_to_watch} ({rem:.1f}s remaining)")
+                        time.sleep(0.3)
 
-            if v_idx < videos_to_watch - 1 and not self._stop_event.is_set():
-                self.gesture.swipe_next_video()
-                time.sleep(random.uniform(1.0, 1.6))
+                    if v_idx < videos_to_watch - 1 and not self._stop_event.is_set():
+                        self.gesture.swipe_next_video()
+                        time.sleep(random.uniform(1.0, 1.6))
 
-        # Return from video viewer back to profile page
-        self.gesture.tap_profile_back()
-        time.sleep(random.uniform(1.0, 1.5))
+                # Return from video player back to profile page
+                self.gesture.tap_profile_back()
+                time.sleep(random.uniform(1.0, 1.5))
 
-        # Follow creator on profile page
-        profile_img = self.device_manager.get_screen()
-        coords = self.detector.find_follow_button_coords(profile_img) if profile_img else None
+        # Re-capture profile screen to locate follow button
+        profile_screen = self.device_manager.get_screen() or screen_img
+
+        # Step 5: Follow creator on profile page
+        coords = self.detector.find_follow_button_coords(profile_screen)
         self._broadcast_status("Tapping Follow button on creator profile...")
+        scale_x, scale_y = self._get_screen_scale(profile_screen)
         if coords:
-            self.gesture.tap_follow_button(x=coords[0], y=coords[1])
+            pt_x = coords[0] / scale_x
+            pt_y = coords[1] / scale_y
+            self.gesture.tap_follow_button(x=pt_x, y=pt_y)
         else:
             self.gesture.tap_follow_button()
 
         time.sleep(random.uniform(1.2, 1.8))
-        self.stats.follows_count += 1
-        self._broadcast_status(
-            f"✅ Followed creator! (Session follows: {self.stats.follows_count}/{self.stats.session_follow_target})"
-        )
-        logger.info(f"Followed creator. Session follows: {self.stats.follows_count}/{self.stats.session_follow_target}")
+
+        # Closed-loop verification of follow state
+        post_screen = self.device_manager.get_screen()
+        is_now_followed = self.detector.is_already_following_author(post_screen) if post_screen else False
+        has_pink_still, _ = self.detector.has_pink_follow_button(post_screen) if post_screen else (False, None)
+
+        if not is_now_followed and has_pink_still:
+            logger.info("Follow state unchanged after first tap, retrying with standard action-row coordinates...")
+            self._broadcast_status("Retrying Follow button tap...")
+            self.gesture.tap_follow_button()
+            time.sleep(random.uniform(1.0, 1.5))
+            post_screen = self.device_manager.get_screen()
+            is_now_followed = self.detector.is_already_following_author(post_screen) if post_screen else False
+            has_pink_still, _ = self.detector.has_pink_follow_button(post_screen) if post_screen else (False, None)
+
+        followed_success = is_now_followed or not has_pink_still
+        if followed_success:
+            self.stats.follows_count += 1
+            self._broadcast_status(
+                f"✅ Followed creator! (Session follows: {self.stats.follows_count}/{self.stats.session_follow_target})"
+            )
+            logger.info(f"Followed creator. Session follows: {self.stats.follows_count}/{self.stats.session_follow_target}")
+        else:
+            logger.warning("Follow button tap could not be confirmed.")
+            self._broadcast_status("Follow button tap not confirmed.")
 
         pause_min = float(self.config.get("probabilities", {}).get("post_action_pause_min_sec", 0.6))
         pause_max = float(self.config.get("probabilities", {}).get("post_action_pause_max_sec", 1.4))
         time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
 
-        # Return to FYP feed
+        # Step 6: Return to FYP feed
         self.gesture.tap_profile_back()
         time.sleep(random.uniform(0.8, 1.4))
         self.recover_to_feed()
-        return True
+        return followed_success
+
+    def test_author_profile(self, auto_return: bool = True) -> Dict[str, Any]:
+        """
+        Navigates to author profile from FYP, inspects profile state via detector,
+        and optionally recovers back to the FYP feed.
+        """
+        self.ensure_app_open()
+        self._broadcast_status("Testing profile visit: navigating to creator profile...")
+        opened, screen_img = self._navigate_to_author_profile()
+
+        if not opened or not screen_img:
+            self.recover_to_feed()
+            return {
+                "status": "failed",
+                "opened": False,
+                "message": "Failed to open author profile via swipe and avatar tap fallback",
+            }
+
+        is_following = self.detector.is_already_following_author(screen_img)
+        is_private = self.detector.is_private_account(screen_img)
+        has_pink_button, _ = self.detector.has_pink_follow_button(screen_img)
+        coords = self.detector.find_follow_button_coords(screen_img)
+        scale_x, scale_y = self._get_screen_scale(screen_img)
+        follow_coords_pt = [round(coords[0] / scale_x, 1), round(coords[1] / scale_y, 1)] if coords else None
+
+        result: Dict[str, Any] = {
+            "status": "ok",
+            "opened": True,
+            "is_following": is_following,
+            "is_private": is_private,
+            "has_pink_button": has_pink_button,
+            "follow_coords": follow_coords_pt,
+            "message": f"Profile opened (Following: {is_following}, Private: {is_private}, Pink button: {has_pink_button})",
+        }
+
+        if auto_return:
+            self._broadcast_status("Returning from profile back to FYP...")
+            self.gesture.tap_profile_back()
+            time.sleep(random.uniform(0.8, 1.2))
+            recovered, _ = self.recover_to_feed()
+            result["recovered"] = recovered
+
+        return result
+
+    def test_author_follow(self) -> Dict[str, Any]:
+        """
+        Executes author follow test sequence on current video.
+        """
+        if self.stats.state != SessionState.RUNNING:
+            self._stop_event.clear()
+        self.ensure_app_open()
+        self._broadcast_status("Testing author follow pipeline...")
+        followed = self._perform_profile_follow_sequence(matched_kws=["manual_test"])
+        return {
+            "status": "ok" if followed else "failed",
+            "followed": followed,
+            "message": "Successfully followed creator & returned to FYP" if followed else "Author follow sequence finished without follow (already followed, private, or could not open)",
+        }
 
     def trigger_search_seeding(self, term: Optional[str] = None, videos_to_watch: Optional[int] = None) -> bool:
         """Manually triggers search seeding for a given query or from configured seed terms."""
@@ -776,6 +1004,15 @@ class SessionRunner:
         if self.stats.state != SessionState.RUNNING:
             self._stop_event.clear()
 
+        # Step 0: Ensure TikTok is running in the foreground and verified via OCR
+        self.ensure_app_open()
+        screen = self.device_manager.get_screen()
+        if screen:
+            st, _ = self.detector.detect_screen_state(screen)
+            if st != "feed" and not self.detector.is_feed_navigation_visible(screen):
+                self._broadcast_status(f"Pre-seeding guard: Recovering from '{st}' to FYP feed...")
+                self.recover_to_feed()
+
         try:
             w, h = self.wda.get_window_size()
             self.gesture.screen_width = w
@@ -793,6 +1030,9 @@ class SessionRunner:
             dwell_max_sec=dwell_max,
             on_progress=lambda msg: self._broadcast_status(msg),
             stop_checker=lambda: self._stop_event.is_set(),
+            device_manager=self.device_manager,
+            detector=self.detector,
+            recover_to_feed_fn=self.recover_to_feed,
         )
         if success:
             self.stats.videos_watched += actual_count
@@ -939,6 +1179,13 @@ class SessionRunner:
                     except Exception as e:
                         logger.debug(f"OCR error during loop: {e}")
 
+                # Track actions taken on this video
+                did_like = False
+                did_favorite = False
+                did_comment = False
+                did_follow = False
+                did_skip = False
+
                 # Calculate Dwell Time (natural human curve: e.g. 6 to 18 seconds)
                 dwell = self._sample_dwell_time(is_niche, is_ad)
                 dwell_start = time.time()
@@ -949,12 +1196,14 @@ class SessionRunner:
                         break
                     if self._skip_flag.is_set():
                         self._skip_flag.clear()
+                        did_skip = True
                         break
                     remaining = max(0.0, dwell - (time.time() - dwell_start))
                     self.stats.current_dwell_remaining = round(remaining, 1)
                     self._broadcast_status(f"{action_desc} ({remaining:.1f}s remaining)")
                     time.sleep(0.3)
 
+                actual_dwell = round(time.time() - dwell_start, 2)
                 self.stats.videos_watched += 1
                 if is_niche:
                     self.stats.niche_matched_count += 1
@@ -985,6 +1234,7 @@ class SessionRunner:
                             self._broadcast_status("Tapping heart icon (Like ❤️)")
                             self.gesture.tap_heart_icon()
                         self.stats.likes_count += 1
+                        did_like = True
 
                         pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
                         pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
@@ -1003,6 +1253,7 @@ class SessionRunner:
                         self._broadcast_status("Bookmarking video (Favorite ⭐)")
                         self.gesture.tap_bookmark_icon()
                         self.stats.favorites_count += 1
+                        did_favorite = True
                         pause_min = float(probs.get("post_action_pause_min_sec", 0.6))
                         pause_max = float(probs.get("post_action_pause_max_sec", 1.4))
                         time.sleep(random.uniform(min(pause_min, pause_max), max(pause_min, pause_max)))
@@ -1020,6 +1271,7 @@ class SessionRunner:
                         opened = self.open_comments_verified()
                         if opened:
                             self.stats.comments_viewed += 1
+                            did_comment = True
                             # Read comments with configured duration range
                             comm_read_min = float(probs.get("comment_read_min_seconds", 3.0))
                             comm_read_max = float(probs.get("comment_read_max_seconds", 6.5))
@@ -1057,7 +1309,42 @@ class SessionRunner:
                             prob_max = float(follow_cfg.get("follow_probability_max", 0.70))
                             follow_threshold = random.uniform(min(prob_min, prob_max), max(prob_min, prob_max))
                             if random.random() < follow_threshold:
-                                self._perform_profile_follow_sequence(matched_kws)
+                                follow_ok = self._perform_profile_follow_sequence(matched_kws)
+                                if follow_ok:
+                                    did_follow = True
+
+                # Persist video interaction & progress to SQLite in real-time
+                if self.db:
+                    try:
+                        self.db.log_video_interaction(
+                            session_id=self.stats.session_id,
+                            caption=self.stats.current_caption,
+                            matched_keywords=matched_kws,
+                            is_niche=is_niche,
+                            is_ad=is_ad,
+                            is_live=False,
+                            dwell_time_seconds=actual_dwell,
+                            action_liked=did_like,
+                            action_favorited=did_favorite,
+                            action_comment_viewed=did_comment,
+                            action_followed=did_follow,
+                            action_skipped_early=did_skip,
+                        )
+                        self.db.update_session_progress(
+                            session_id=self.stats.session_id,
+                            duration_seconds=self.stats.duration_seconds,
+                            videos_watched=self.stats.videos_watched,
+                            likes_count=self.stats.likes_count,
+                            favorites_count=self.stats.favorites_count,
+                            comments_viewed=self.stats.comments_viewed,
+                            follows_count=self.stats.follows_count,
+                            ads_skipped=self.stats.ads_skipped,
+                            lives_skipped=self.stats.lives_skipped,
+                            niche_matched_count=self.stats.niche_matched_count,
+                            state=self.stats.state.value if hasattr(self.stats.state, "value") else str(self.stats.state),
+                        )
+                    except Exception as e:
+                        logger.error(f"Error persisting video interaction: {e}")
 
                 # Step 8: Biometric Gesture to Next Video
                 # Occasional re-watch swipe back with range sampling
@@ -1084,8 +1371,38 @@ class SessionRunner:
                 post_swipe_max = float(probs.get("post_swipe_pause_max_sec", 1.8))
                 time.sleep(random.uniform(min(post_swipe_min, post_swipe_max), max(post_swipe_min, post_swipe_max)))
         finally:
+            prev_state = self.stats.state
+            exit_reason = "Completed"
+            if self._stop_event.is_set():
+                exit_reason = "Stopped by user"
+            elif prev_state == SessionState.CAPTCHA_HALTED:
+                exit_reason = "Halted by Safety Sentinel (CAPTCHA)"
+            elif max_duration_sec and elapsed >= max_duration_sec:
+                exit_reason = "Target duration reached"
+            elif self.stats.videos_watched >= safety_cfg.get("max_daily_videos", 150):
+                exit_reason = "Daily safety limit reached"
+
+            final_state_str = "CAPTCHA_HALTED" if prev_state == SessionState.CAPTCHA_HALTED else "STOPPED"
             self.stats.state = SessionState.STOPPED
             self._broadcast_status("Session finished. Closing app...")
             self.close_app()
             self._broadcast_status("Session finished.")
+            if self.db:
+                try:
+                    self.db.finalize_session(
+                        session_id=self.stats.session_id,
+                        duration_seconds=self.stats.duration_seconds,
+                        videos_watched=self.stats.videos_watched,
+                        likes_count=self.stats.likes_count,
+                        favorites_count=self.stats.favorites_count,
+                        comments_viewed=self.stats.comments_viewed,
+                        follows_count=self.stats.follows_count,
+                        ads_skipped=self.stats.ads_skipped,
+                        lives_skipped=self.stats.lives_skipped,
+                        niche_matched_count=self.stats.niche_matched_count,
+                        state=final_state_str,
+                        exit_reason=exit_reason,
+                    )
+                except Exception as e:
+                    logger.error(f"Error finalizing session in DB: {e}")
             logger.info("TikTok session loop terminated.")

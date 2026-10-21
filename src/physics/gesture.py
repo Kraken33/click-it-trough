@@ -231,50 +231,93 @@ class BiometricGestureEngine:
             tap_y = h * random.uniform(0.338, 0.350)
             return self.client.tap(tap_x, tap_y, dwell_ms=random.randint(45, 75))
 
-    def tap_author_avatar(self) -> bool:
-
+    def tap_author_avatar(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
         """Taps the creator's avatar on the right sidebar of the FYP feed to open their profile."""
         w, h = self.screen_width, self.screen_height
-        # Avatar is on the right-hand bar directly above the heart icon (~92.5% w, ~47.5-49.5% h)
-        avatar_x = w * random.uniform(0.905, 0.945)
-        avatar_y = h * random.uniform(0.472, 0.495)
-        return self.client.tap(avatar_x, avatar_y, dwell_ms=random.randint(45, 75))
+        if x is not None and y is not None:
+            if x > w or y > h:
+                scale = max(2.0, round(max(x / w, y / h)))
+                target_x = (x / scale) + random.uniform(-2, 2)
+                target_y = (y / scale) + random.uniform(-2, 2)
+            else:
+                target_x = x + random.uniform(-2, 2)
+                target_y = y + random.uniform(-2, 2)
+        else:
+            # Avatar default on right action bar (~91.5-93.5% w, ~44.5-47.5% h)
+            target_x = w * random.uniform(0.915, 0.935)
+            target_y = h * random.uniform(0.445, 0.475)
+        return self.client.tap(target_x, target_y, dwell_ms=random.randint(45, 75))
+
+    def tap_author_handle(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
+        """Taps the author's username (@handle) on the bottom-left of the FYP video to open profile."""
+        w, h = self.screen_width, self.screen_height
+        if x is not None and y is not None:
+            if x > w or y > h:
+                scale = max(2.0, round(max(x / w, y / h)))
+                target_x = (x / scale) + random.uniform(-4, 4)
+                target_y = (y / scale) + random.uniform(-3, 3)
+            else:
+                target_x = x + random.uniform(-4, 4)
+                target_y = y + random.uniform(-3, 3)
+        else:
+            target_x = w * random.uniform(0.14, 0.28)
+            target_y = h * random.uniform(0.83, 0.86)
+        return self.client.tap(target_x, target_y, dwell_ms=random.randint(45, 75))
 
     def swipe_to_profile(self) -> bool:
-        """Swipes horizontally from right to left across the video to open the author profile."""
+        """
+        Swipes horizontally from right to left across the center video area to open the author profile.
+        Starts well clear of the right sidebar buttons (starts at 72-77% w) to avoid touch conflict.
+        """
         w, h = self.screen_width, self.screen_height
-        start_x = w * random.uniform(0.78, 0.88)
-        end_x = w * random.uniform(0.14, 0.24)
-        y = h * random.uniform(0.48, 0.54)
-        duration_ms = random.randint(200, 280)
-        return self.client.swipe(
-            direction="left",
-            x=start_x,
-            y=y,
-            velocity=random.uniform(1500, 2200),
+        start_x = w * random.uniform(0.72, 0.77)
+        end_x = w * random.uniform(0.12, 0.18)
+        y = h * random.uniform(0.40, 0.46)
+        success = self.client.press_and_drag_with_velocity(
+            start_x,
+            y,
+            end_x,
+            y,
+            velocity=random.uniform(2000.0, 2400.0),
+            press_duration=0.02,
+            hold_duration=0.0,
         )
+        if not success:
+            return self.client.swipe(
+                direction="left",
+                x=start_x,
+                y=y,
+                velocity=random.uniform(1800, 2200),
+            )
+        return True
 
     def tap_first_profile_video(self) -> bool:
         """Taps the first video thumbnail in the author profile's 3-column video grid."""
         w, h = self.screen_width, self.screen_height
-        # First video tile is at top-left of the profile grid (~16-22% w, ~68-74% h)
-        tile_x = w * random.uniform(0.14, 0.22)
-        tile_y = h * random.uniform(0.68, 0.74)
+        # First video tile is at top-left of the profile grid (~15-22% w, ~50-55% h)
+        tile_x = w * random.uniform(0.15, 0.22)
+        tile_y = h * random.uniform(0.50, 0.55)
         return self.client.tap(tile_x, tile_y, dwell_ms=random.randint(50, 80))
 
     def tap_follow_button(self, x: Optional[float] = None, y: Optional[float] = None) -> bool:
         """
         Taps the Follow button on the author's profile page.
-        Accepts optional OCR-located pixel coordinates with micro-jitter.
+        Accepts point coordinates or retina pixel coordinates (auto-scaled).
         """
         w, h = self.screen_width, self.screen_height
         if x is not None and y is not None:
-            target_x = x + random.uniform(-4, 4)
-            target_y = y + random.uniform(-3, 3)
+            # If coordinates are in retina pixels (e.g. 2x or 3x image pixels), scale down to points
+            if y > h * 0.48 or x > w:
+                scale = max(2.0, round(y / (h * 0.265)))
+                target_x = (x / scale) + random.uniform(-4, 4)
+                target_y = (y / scale) + random.uniform(-3, 3)
+            else:
+                target_x = x + random.uniform(-4, 4)
+                target_y = y + random.uniform(-3, 3)
         else:
-            # Standard author profile follow button location (~40-60% w, ~30-34% h)
-            target_x = w * random.uniform(0.42, 0.58)
-            target_y = h * random.uniform(0.305, 0.335)
+            # Standard author profile follow button location (left button in actions row: ~20-28% w, ~25.5-27.5% h)
+            target_x = w * random.uniform(0.20, 0.28)
+            target_y = h * random.uniform(0.255, 0.275)
         return self.client.tap(target_x, target_y, dwell_ms=random.randint(50, 85))
 
     def tap_profile_back(self) -> bool:

@@ -77,19 +77,28 @@ def doctor(
     console.print(table)
 
 
+def get_app():
+    from src.web.app import create_app
+    return create_app()
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Host interface to bind"),
     port: int = typer.Option(8000, help="Port to listen on"),
     config_file: str = typer.Option("config/default_config.yaml", help="Path to config file"),
+    reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload on code changes"),
 ):
     """
     Starts the FastAPI server and WebSocket backend for the React Web Dashboard.
     """
     console.print(f"[bold green]Starting TikTok Automation Server on http://{host}:{port}[/bold green]")
-    from src.web.app import create_app
-    web_app = create_app(config_path=config_file)
-    uvicorn.run(web_app, host=host, port=port, log_level="info")
+    if reload:
+        uvicorn.run("src.main:get_app", host=host, port=port, reload=True, factory=True, log_level="info")
+    else:
+        from src.web.app import create_app
+        web_app = create_app(config_path=config_file)
+        uvicorn.run(web_app, host=host, port=port, log_level="info")
 
 
 @app.command()

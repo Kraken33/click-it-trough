@@ -148,6 +148,33 @@ class TestScreenInterfaceDetection(unittest.TestCase):
         state, markers = detector.detect_screen_state(self.dummy_img)
         self.assertEqual(state, "sound")
 
+    def test_detect_sound_page_metadata_variant(self):
+        ocr = FakeOCR(text="Contains: Mozart Lacrimosa\nOriginal sound by: jojo.aitools\nSave  Template\n1.4M posts")
+        detector = ScreenDetector(ocr)
+        state, markers = detector.detect_screen_state(self.dummy_img)
+        self.assertEqual(state, "sound")
+
+    def test_sound_page_not_detected_on_feed_with_original_sound(self):
+        # A video playing on FYP displays "original sound - artist" in the music ticker
+        ocr = FakeOCR(
+            text="Following  For You\n@cool_creator Check this out! #fyp #viral\noriginal sound - popular artist\nHome  Friends  +  Inbox  Profile",
+            header_text="Following  For You",
+        )
+        detector = ScreenDetector(ocr)
+        state, markers = detector.detect_screen_state(self.dummy_img)
+        self.assertEqual(state, "feed")
+        self.assertFalse(detector.is_sound_page_open(self.dummy_img, text=ocr.text)[0])
+
+    def test_sound_page_not_detected_on_feed_with_add_to_favorites_or_story(self):
+        ocr = FakeOCR(
+            text="For You\nAdd to favorites\nPost to story\nHome  Friends  +  Inbox  Profile",
+            header_text="For You",
+        )
+        detector = ScreenDetector(ocr)
+        state, markers = detector.detect_screen_state(self.dummy_img)
+        self.assertEqual(state, "feed")
+        self.assertFalse(detector.is_sound_page_open(self.dummy_img, text=ocr.text)[0])
+
     # 8. Camera / Creation Mode ('+' tab)
     def test_detect_camera_screen(self):
         ocr = FakeOCR(text="Upload  Effects  Templates\n15s  60s  10m  Photo\nFlip  Filters  Timer")
@@ -289,6 +316,33 @@ class TestSessionRunnerRecoveryExecution(unittest.TestCase):
             ("feed", ["for you"]),
         ])
         return runner, mock_wda
+
+    def test_recovery_aborts_immediately_if_already_on_feed(self):
+        runner, mock_wda = self._create_mock_runner("feed")
+        runner.detector.detect_screen_state = MagicMock(return_value=("feed", ["for you"]))
+        ok, state = runner.recover_to_feed(max_attempts=1)
+        self.assertTrue(ok)
+        self.assertEqual(state, "feed")
+        mock_wda.tap.assert_not_called()
+        mock_wda.dismiss_keyboard.assert_not_called()
+
+    def test_recovery_from_search_uses_ocr_cancel_button(self):
+        runner, mock_wda = self._create_mock_runner("search")
+        runner.detector.find_button_coordinate = MagicMock(return_value=(0.91, 0.07))
+        ok, state = runner.recover_to_feed(max_attempts=1)
+        self.assertTrue(ok)
+        self.assertEqual(state, "search")
+        # Should tap the OCR-detected Cancel button at (0.91 * 393, 0.07 * 852)
+        mock_wda.tap.assert_called_with(0.91 * 393, 0.07 * 852)
+
+    def test_recovery_from_profile_uses_ocr_home_tab(self):
+        runner, mock_wda = self._create_mock_runner("profile", markers=["author_profile"])
+        runner.detector.find_button_coordinate = MagicMock(return_value=(0.10, 0.95))
+        ok, state = runner.recover_to_feed(max_attempts=1)
+        self.assertTrue(ok)
+        self.assertEqual(state, "profile")
+        # Should tap the OCR-detected Home tab at (0.10 * 393, 0.95 * 852)
+        mock_wda.tap.assert_called_with(0.10 * 393, 0.95 * 852)
 
     def test_recovery_from_likes_list(self):
         runner, mock_wda = self._create_mock_runner("likes_list")

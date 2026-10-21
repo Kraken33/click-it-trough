@@ -1,5 +1,6 @@
 import re
 from typing import Dict, List, Optional, Tuple
+import numpy as np
 from PIL import Image, ImageOps, ImageStat
 
 from .ocr import VisionOCR
@@ -53,6 +54,15 @@ class ScreenDetector:
         r"\bfollowing\b",
         r"\bfriends\b",
         r"\bcommunity\b",
+        r"\blive\b",
+        r"\bshop\b",
+        r"für dich",
+        r"fuer dich",
+        r"folge ich",
+        r"startseite",
+        r"freunde",
+        r"posteingang",
+        r"profil",
         r"для вас",
         r"підписки",
         r"подписки",
@@ -156,6 +166,21 @@ class ScreenDetector:
         r"поиск",
     ]
 
+    # Indicators that search results page (with tabs like Top / Videos / Users) is open
+    SEARCH_RESULTS_TABS = [
+        r"\btop\b",
+        r"\bvideos\b",
+        r"\busers\b",
+        r"\bsounds\b",
+        r"\blive\b",
+        r"\bplaces\b",
+        r"\bлучшее\b",
+        r"\bвидео\b",
+        r"\bпользователи\b",
+        r"\bзвуки\b",
+        r"\bместа\b",
+    ]
+
     # Indicators that QR scan screen is open
     SCAN_PATTERNS = [
         r"scan your friend's qr code",
@@ -199,13 +224,11 @@ class ScreenDetector:
     SOUND_PATTERNS = [
         r"\buse\s+(this\s+)?sound\b",
         r"\buse sound\b",
-        r"\boriginal sound\b",
-        r"\blike this sound\b",
-        r"\badd to favorites\b",
-        r"\bfavorites to find\b",
-        r"\badd to music app\b",
-        r"\badd to (apple\s+)?music\b",
-        r"\bpost to story\b",
+        r"\bвикористати\s+(цей\s+)?звук\b",
+        r"\bиспользовать\s+(этот\s+)?звук\b",
+        r"\bsound\s+verwenden\b",
+        r"\busar\s+(este\s+)?sonido\b",
+        r"\butiliser\s+(ce\s+)?son\b",
     ]
 
     # Indicators that Camera / Creation screen ('+' tab) is open
@@ -235,6 +258,8 @@ class ScreenDetector:
         r"\bexplore more lives\b",
         r"\bwatch live\b",
     ]
+
+    ocr: Optional[VisionOCR] = None
 
     def __init__(self, ocr: Optional[VisionOCR] = None):
         self.ocr = ocr or VisionOCR()
@@ -294,6 +319,29 @@ class ScreenDetector:
             return (int(width * 0.5), int(height * 0.58))
         return (int(width * 0.5), int(height * 0.65))
 
+    def is_transition_frame(self, screen_image: Optional[Image.Image], text: Optional[str] = None) -> bool:
+        """
+        Detects if screen is in mid-swipe transition, buffering, or blank/black state.
+        """
+        if screen_image is None:
+            return True
+        # If text is already extracted and non-empty, it's not a blank transition frame
+        if text and len(text.strip()) > 3:
+            return False
+        try:
+            stat = ImageStat.Stat(screen_image)
+            mean_val = sum(stat.mean) / len(stat.mean)
+            std_val = sum(stat.stddev) / len(stat.stddev)
+            # Pitch black / very dark transition frame during video load or swipe
+            if mean_val < 14.0:
+                return True
+            # Solid uniform color (whiteout or single color transition)
+            if std_val < 5.0:
+                return True
+        except Exception:
+            pass
+        return False
+
     def is_tiktok_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether TikTok UI is currently active on screen.
@@ -301,14 +349,36 @@ class ScreenDetector:
         """
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
         matched = [p for p in self.TIKTOK_PATTERNS if re.search(p, raw_text)]
-        if not matched:
-            if "foryou" in raw_text or "shop" in raw_text:
-                matched.append(r"\bfor you\b")
-            else:
-                is_comm, comm_m = self.is_comment_section_open(screen_image, text=raw_text)
-                if is_comm:
-                    return True, comm_m
-        return len(matched) > 0, matched
+        if matched:
+            return True, matched
+
+        # Substring / fuzzy matches in raw text
+        if any(w in raw_text for w in ["foryou", "for you", "shop", "following", "ollow", "community", "für dich"]):
+            return True, ["foryou_or_feed_tab"]
+
+        is_comm, comm_m = self.is_comment_section_open(screen_image, text=raw_text)
+        if is_comm:
+            return True, comm_m
+
+        # Enhanced header crop if contrast was low (e.g. white header text on bright video background)
+        if screen_image:
+            try:
+                w, h = screen_image.size
+                header = screen_image.crop((0, int(h * 0.04), w, int(h * 0.13)))
+                gray = ImageOps.autocontrast(header.convert("L"), cutoff=2)
+                h_text = self.ocr.extract_text(gray).lower()
+                h_matched = [p for p in self.TIKTOK_PATTERNS if re.search(p, h_text)]
+                if h_matched or any(w in h_text for w in ["ollow", "foryou", "for you", "shop", "live", "dich", "community"]):
+                    return True, ["enhanced_header_tab"]
+            except Exception:
+                pass
+
+        # If right sidebar action metrics are visible, we are on the video feed
+        sidebar_metrics = self.extract_sidebar_metrics(screen_image)
+        if sidebar_metrics:
+            return True, [f"sidebar_{k}" for k in sidebar_metrics.keys()]
+
+        return False, []
 
     def is_homescreen_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
@@ -380,20 +450,54 @@ class ScreenDetector:
         matched = [p for p in self.STORY_PATTERNS if re.search(p, raw_text)]
         return (not is_feed and len(matched) > 0), matched
 
+    def has_pink_follow_button(self, screen_image: Image.Image) -> Tuple[bool, Optional[Tuple[float, float]]]:
+        """
+        Detects if the signature TikTok red/pink Follow button (#FE2C55) is present
+        in the author profile action area (x: [0.04, 0.48], y: [0.20, 0.35]).
+        Returns (has_pink, (center_x_px, center_y_px)).
+        """
+        if not screen_image:
+            return False, None
+        try:
+            w, h = screen_image.size
+            crop = screen_image.crop((int(w * 0.05), int(h * 0.22), int(w * 0.48), int(h * 0.32)))
+            arr = np.array(crop)
+            # TikTok brand red/pink: R > 180, G < 100, B < 130
+            mask = (arr[:, :, 0] > 180) & (arr[:, :, 1] < 100) & (arr[:, :, 2] < 130)
+            pink_ratio = float(np.mean(mask))
+            if pink_ratio > 0.15:
+                y_indices, x_indices = np.where(mask)
+                if len(x_indices) > 0 and len(y_indices) > 0:
+                    rel_cx = float(np.mean(x_indices)) / crop.width
+                    rel_cy = float(np.mean(y_indices)) / crop.height
+                    abs_cx = (0.05 + rel_cx * 0.43) * w
+                    abs_cy = (0.22 + rel_cy * 0.10) * h
+                    return True, (abs_cx, abs_cy)
+                return True, (w * 0.24, h * 0.26)
+        except Exception:
+            pass
+        return False, None
+
     def is_profile_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether an author/user profile page or own profile tab is open.
         """
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
-        has_following = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["following", "підписки", "подписки"])
-        has_followers = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["followers", "підписники", "подписчики", "читачі"])
-        has_likes = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["likes", "вподобайки", "лайки"])
-        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная"]) and any(
-            p in raw_text for p in ["profile", "prof ile", "профіль", "профиль", "inbox", "discover"]
+
+        # Guard: If top feed tabs ('for you' / 'foryou') are present on screen and NOT in edit profile mode,
+        # this is the FYP video feed, NOT a profile page or profile tab!
+        if any(re.search(r"\b" + re.escape(t) + r"\b", raw_text) for t in ["for you", "foryou", "für dich", "для вас"]) and not any(w in raw_text for w in ["edit profile", "profil bearbeiten"]):
+            return False, []
+
+        has_following = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["following", "folge ich", "siguiendo", "abonnements", "підписки", "подписки"])
+        has_followers = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["followers", "follower", "seguidores", "abonnés", "підписники", "подписчики", "читачі"])
+        has_likes = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["likes", "gefällt mir", "me gusta", "j'aime", "вподобайки", "лайки"])
+        has_bottom_bar = any(h in raw_text for h in ["home", "startseite", "головна", "главная"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "profil", "профіль", "профиль", "inbox", "posteingang", "discover", "freunde"]
         )
 
         # Own profile tab indicators (e.g. Edit profile button + bottom navigation bar)
-        has_edit_profile = any(w in raw_text for w in ["edit profile", "редагувати профіль", "изменить профиль", "add bio", "share your daily routine"])
+        has_edit_profile = any(w in raw_text for w in ["edit profile", "profil bearbeiten", "редагувати профіль", "изменить профиль", "add bio", "share your daily routine"])
         if (has_edit_profile or (has_following and has_followers)) and has_bottom_bar:
             return True, ["profile_tab", "edit_or_stats"]
 
@@ -408,54 +512,61 @@ class ScreenDetector:
             return True, ["author_profile", "following_followers"]
 
         # Author profile without bottom bar:
-        # Detectable by:
-        # 1. Follow button + Message / bio / suggested / link.bio
-        # 2. Direct Message button without bottom bar (only author profiles have "Message" without bottom bar)
-        # 3. Stats row (\d+ \d+ \d+) with "just watched" / "suggested accounts" / "link.bio"
-        has_follow_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["follow", "following", "підписатися", "подписаться"])
-        has_msg_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["message", "повідомлення", "сообщение"])
+        has_follow_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["follow", "following", "folgen", "folge ich", "підписатися", "подписаться", "seguir"])
+        has_msg_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["message", "nachricht", "повідомлення", "сообщение", "mensaje"])
         has_stats_row = bool(re.search(r"\b\d+[,.\d]*\s+\d+[,.\d]*\s+\d+[,.\d]*\b", raw_text))
         has_profile_extra = any(w in raw_text for w in ["just watched", "suggested accounts", "link.bio"])
+
+        # Check for signature pink follow button
+        has_pink, _ = self.has_pink_follow_button(screen_image)
+        if has_pink and not has_bottom_bar:
+            return True, ["author_profile", "pink_follow_btn"]
 
         if not has_bottom_bar:
             if (has_follow_btn and has_msg_btn) or (has_msg_btn and (has_stats_row or has_profile_extra or "video" in raw_text)) or (has_follow_btn and (has_stats_row or has_profile_extra)):
                 return True, ["author_profile", "follow_or_message"]
             if has_msg_btn and len(raw_text) > 10:
                 return True, ["author_profile", "message_btn"]
+            if has_follow_btn and (has_stats_row or "@" in raw_text):
+                return True, ["author_profile", "follow_and_handle"]
 
         return False, []
 
     def is_already_following_author(self, screen_image: Image.Image, text: Optional[str] = None) -> bool:
         """
         Detects if the currently viewed author profile is already followed.
-        Checks for indicators like 'following', 'friends', 'requested', or a standalone 'message' button.
         """
+        # 1. Pink button indicates unfollowed state definitively
+        has_pink, _ = self.has_pink_follow_button(screen_image)
+        if has_pink:
+            return False
+
+        # 2. Check if an explicit unfollowed button is visible via OCR
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+        unfollowed_terms = ["follow", "folgen", "підписатися", "подписаться", "seguir", "s'abonner"]
+        has_unfollowed_btn = any(
+            re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", raw_text)
+            for w in unfollowed_terms
+        )
+        if has_unfollowed_btn:
+            has_explicit_following_btn = bool(re.search(r"\b(following|friends|requested|folge ich|freunde|angefragt)\s+(message|nachricht)\b", raw_text))
+            if not has_explicit_following_btn:
+                return False
 
-        # Check if 'follow' button (unfollowed state) is present
-        has_unfollowed_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["follow", "підписатися", "подписаться"])
+        # 3. Check for explicit followed indicators in the action button region
+        obs = self.ocr.extract_observations(screen_image) if screen_image else []
+        for o_text, cx, cy, bw, bh in obs:
+            if 0.18 <= cy <= 0.40 and cx < 0.65:
+                clean = o_text.strip().lower()
+                if clean in ["following", "folge ich", "friends", "freunde", "requested", "angefragt", "підписки", "читаєте", "подписки", "друзья"]:
+                    return True
 
-        # Explicit followed / requested terms
-        already_following_terms = [
-            r"\bfollowing\b",
-            r"\bfriends\b",
-            r"\brequested\b",
-            r"\bпідписки\b",
-            r"\bчитаєте\b",
-            r"\bви стежите\b",
-            r"\bдрузі\b",
-            r"\bдрузья\b",
-            r"\bзапит надіслано\b",
-            r"\bзапрос отправлен\b",
+        already_following_patterns = [
+            r"\b(following|friends|requested|folge ich|freunde|angefragt)\s+(message|nachricht)\b",
+            r"\b(message|nachricht)\s+(following|friends|freunde)\b",
+            r"\b(друзі|читаєте)\s+(повідомлення|сообщение)\b",
         ]
-        has_following_marker = any(re.search(p, raw_text) for p in already_following_terms)
-
-        if has_following_marker and not has_unfollowed_btn:
-            return True
-
-        # If Message button is present without an unfollowed 'Follow' button
-        has_message_btn = any(re.search(r"\b" + re.escape(w) + r"\b", raw_text) for w in ["message", "повідомлення", "сообщение"])
-        if has_message_btn and not has_unfollowed_btn:
+        if any(re.search(p, raw_text) for p in already_following_patterns):
             return True
 
         return False
@@ -466,6 +577,8 @@ class ScreenDetector:
         private_terms = [
             "this account is private",
             "private account",
+            "dieses konto ist privat",
+            "privates konto",
             "це приватний акаунт",
             "это приватный аккаунт",
         ]
@@ -473,20 +586,87 @@ class ScreenDetector:
 
     def find_follow_button_coords(self, screen_image: Image.Image) -> Optional[Tuple[float, float]]:
         """
-        Locates the Follow button on the author's profile page using Vision OCR observations.
+        Locates the Follow button on the author's profile page.
+        Uses OCR observations, cropped button enhancement, and pink button color detection.
         Returns (center_x_px, center_y_px) or None if not found.
         """
-        observations = self.ocr.extract_observations(screen_image)
+        if not screen_image:
+            return None
         w, h = screen_image.size
 
+        # 1. Check OCR observations
+        observations = self.ocr.extract_observations(screen_image)
         for text, cx, cy, bw, bh in observations:
             clean = text.strip().lower()
-            if clean in ["follow", "підписатися", "подписаться"]:
-                # Profile follow button is in upper-mid section (typically Y between 0.18 and 0.48)
-                if 0.18 <= cy <= 0.48:
+            clean_noprepr = re.sub(r"^[+\s]+", "", clean)
+            if clean_noprepr in ["follow", "folgen", "follow back", "zurückfolgen", "підписатися", "подписаться", "seguir", "s'abonner"]:
+                if 0.18 <= cy <= 0.48 and cx < 0.65:
                     return cx * w, cy * h
 
+        # 2. Check action button crop with autocontrast
+        try:
+            btn_crop = screen_image.crop((int(w * 0.04), int(h * 0.22), int(w * 0.48), int(h * 0.31)))
+            crop_text = self.ocr.extract_text(btn_crop).strip().lower()
+            clean_crop = re.sub(r"^[+\s]+", "", crop_text)
+            if any(w_btn in clean_crop for w_btn in ["follow", "folgen", "підписатися", "подписаться", "seguir"]):
+                return (w * 0.24, h * 0.265)
+        except Exception:
+            pass
+
+        # 3. Check for signature TikTok pink/red button color
+        has_pink, pink_coords = self.has_pink_follow_button(screen_image)
+        if has_pink and pink_coords:
+            return pink_coords
+
         return None
+
+    def find_author_handle_coords(self, screen_image: Image.Image) -> Optional[Tuple[float, float]]:
+        """
+        Locates the creator username (@...) on the FYP video screen.
+        Returns (center_x_px, center_y_px) or None.
+        """
+        if not screen_image:
+            return None
+        w, h = screen_image.size
+        observations = self.ocr.extract_observations(screen_image)
+        # Priority 1: Text containing '@'
+        for text, cx, cy, bw, bh in observations:
+            clean = text.strip()
+            if ("@" in clean or clean.startswith("@")) and len(clean) > 2 and 0.60 <= cy <= 0.92 and cx < 0.65:
+                return (cx * w, cy * h)
+
+        # Priority 2: Leading handle / author display name located just above caption
+        ignored = {"repost", "template", "original", "search", "followers", "audio", "sound", "filter"}
+        for text, cx, cy, bw, bh in observations:
+            clean = text.strip()
+            lower = clean.lower()
+            if 0.68 <= cy <= 0.86 and cx < 0.45 and 3 <= len(clean) <= 28:
+                if not any(ign in lower for ign in ignored) and not clean.startswith("#"):
+                    return (cx * w, cy * h)
+        return None
+
+    def find_author_avatar_coords(self, screen_image: Image.Image) -> Optional[Tuple[float, float]]:
+        """
+        Locates the creator avatar on the right action bar of the FYP video screen.
+        Checks OCR observations inside the avatar badge or derives position from sidebar metrics.
+        Returns (center_x_px, center_y_px) or default sidebar avatar center.
+        """
+        if not screen_image:
+            return None
+        w, h = screen_image.size
+        observations = self.ocr.extract_observations(screen_image)
+
+        # Priority 1: OCR text directly inside avatar badge (e.g. initials, badge)
+        for text, cx, cy, bw, bh in observations:
+            if cx > 0.88 and 0.42 <= cy <= 0.52:
+                return (cx * w, cy * h)
+
+        # Priority 2: Derive avatar center from like button position (avatar is ~0.10 above likes)
+        for text, cx, cy, bw, bh in observations:
+            if cx > 0.88 and 0.53 <= cy <= 0.62:
+                return (cx * w, (cy - 0.10) * h)
+
+        return (0.925 * w, 0.465 * h)
 
 
     def is_inbox_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
@@ -545,6 +725,69 @@ class ScreenDetector:
                     return True, ["search_page_active"]
         return False, []
 
+    def is_search_results_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether the search results page (with tabs like Top/Users/Videos) is open.
+        Returns (is_results, list_of_matched_indicators).
+        """
+        raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+        header_text = self.ocr.extract_header_text(screen_image).lower()
+
+        # Check for search results tab indicators in header or raw text
+        matched_tabs = [t for t in self.SEARCH_RESULTS_TABS if re.search(t, header_text) or re.search(t, raw_text)]
+        has_filter = bool(re.search(r"\bfilters?\b|\bфильтр(ы)?\b", raw_text))
+
+        # Check for bottom bar (search results usually do NOT show bottom bar)
+        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "inbox"]
+        )
+
+        if len(matched_tabs) >= 2 and not has_bottom_bar:
+            return True, matched_tabs
+        if has_filter and len(matched_tabs) >= 1:
+            return True, matched_tabs + ["filters"]
+        if re.search(r"see more results|results for|результаты для", raw_text):
+            return True, ["explicit_results_marker"]
+
+        return False, []
+
+    def is_search_video_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
+        """
+        Uses OCR to detect whether a full-screen video player opened from search results is active.
+        Returns (is_search_video, list_of_matched_indicators).
+        """
+        raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+        header_text = self.ocr.extract_header_text(screen_image).lower()
+
+        # FYP has feed tabs ('Following' / 'For You') - search videos do not
+        has_fyp_tabs = any(
+            re.search(r"\b" + re.escape(t) + r"\b", header_text)
+            for t in ["for you", "foryou", "following", "для вас", "подписки"]
+        )
+        if has_fyp_tabs:
+            return False, []
+
+        # If on search results page with tab grid, not full-screen video
+        is_results, _ = self.is_search_results_open(screen_image, text=raw_text)
+        if is_results:
+            return False, []
+
+        # Video player indicators: action buttons or comment prompt
+        has_right_sidebar = bool(re.search(r"\b(share|comment|share to|repost|like)\b", raw_text))
+        has_comment_bar = any(c in raw_text for c in ["add comment", "добавьте комментарий", "залиште коментар", "say something"])
+        has_search_header = any(
+            re.search(r"\b" + re.escape(p) + r"\b", header_text)
+            for p in ["search", "поиск", "пошук", "find more"]
+        )
+
+        if has_search_header and (has_right_sidebar or has_comment_bar):
+            return True, ["search_video_active", "search_header"]
+
+        if has_comment_bar and has_right_sidebar:
+            return True, ["search_video_active", "video_controls"]
+
+        return False, []
+
     def is_scan_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether the QR code scanner screen is open.
@@ -583,16 +826,63 @@ class ScreenDetector:
         matched = [p for p in self.SHOP_PATTERNS if re.search(p, raw_text)]
         return len(matched) >= 1, matched
 
+    def is_feed_navigation_visible(self, screen_image: Image.Image, text: Optional[str] = None) -> bool:
+        """
+        Quick OCR check to determine if primary TikTok feed navigation elements
+        (header tabs or bottom navigation bar) are visibly rendered on screen.
+        """
+        raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+        has_bottom_bar = any(h in raw_text for h in ["home", "startseite", "головна", "главная"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "profil", "профіль", "профиль", "inbox", "posteingang", "входящие", "discover", "freunde", "friends"]
+        )
+        has_feed_tabs = any(
+            re.search(r"\b" + re.escape(t) + r"\b", raw_text)
+            for t in ["for you", "foryou", "für dich", "fuer dich", "для вас", "following", "folge ich"]
+        )
+        return has_bottom_bar or has_feed_tabs
+
     def is_sound_page_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
         Uses OCR to detect whether the audio / sound detail page is open.
+        Guarded against FYP feeds displaying audio marquee tickers or video captions.
         Returns (is_sound, list_of_matched_indicators).
         """
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
+
+        # Guard 1: Sound page NEVER has the bottom navigation bar (Home + Inbox/Profile/Discover)
+        has_bottom_bar = any(h in raw_text for h in ["home", "startseite", "головна", "главная"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "profil", "профіль", "профиль", "inbox", "posteingang", "входящие", "discover", "freunde", "friends"]
+        )
+        if has_bottom_bar:
+            return False, []
+
+        # Guard 2: Sound page NEVER has FYP feed header tabs
+        has_feed_tabs = any(
+            re.search(r"\b" + re.escape(t) + r"\b", raw_text)
+            for t in ["for you", "foryou", "für dich", "fuer dich", "для вас", "following", "folge ich", "підписки", "подписки"]
+        )
+        if has_feed_tabs:
+            return False, []
+
+        # 1. Direct high-confidence CTA on sound page
         matched = [p for p in self.SOUND_PATTERNS if re.search(p, raw_text)]
-        if not matched and "apple music" in raw_text and ("save" in raw_text or "post to story" in raw_text):
-            matched = ["apple_music_sound_page"]
-        return len(matched) >= 1, matched
+        if matched:
+            return True, matched
+
+        # 2. Audio detail metadata accompanied by sound page actions (e.g. Save, Template, post counts)
+        has_audio_meta = any(w in raw_text for w in ["original sound by", "sound by", "contains:", "original sound -", "original sound"])
+        has_sound_actions = any(w in raw_text for w in [
+            "add to favorites", "add to music app", "add to music", "add to apple music",
+            "save original", "posts", "videos", "template"
+        ])
+        if has_audio_meta and has_sound_actions:
+            if any(w in raw_text for w in ["posts", "videos", "save", "template", "favorites"]):
+                return True, ["audio_meta_with_sound_action"]
+
+        if "apple music" in raw_text and ("save" in raw_text or "posts" in raw_text):
+            return True, ["apple_music_sound_page"]
+
+        return False, []
 
     def is_camera_open(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
         """
@@ -600,10 +890,14 @@ class ScreenDetector:
         Returns (is_camera, list_of_matched_indicators).
         """
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
-        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная"]) and any(
-            p in raw_text for p in ["profile", "prof ile", "inbox", "discover"]
+        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная", "startseite"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "inbox", "discover", "friends", "freunde"]
         )
-        if has_bottom_bar:
+        has_feed_tabs = any(
+            re.search(r"\b" + re.escape(t) + r"\b", raw_text)
+            for t in ["for you", "foryou", "für dich", "fuer dich", "для вас"]
+        )
+        if has_bottom_bar or has_feed_tabs:
             return False, []
 
         matched = [p for p in self.CAMERA_PATTERNS if re.search(p, raw_text)]
@@ -617,15 +911,21 @@ class ScreenDetector:
         Returns (is_live_room, list_of_matched_indicators).
         """
         raw_text = text.lower() if text is not None else self.ocr.extract_text(screen_image).lower()
-        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная"]) and any(
-            p in raw_text for p in ["profile", "prof ile", "inbox", "discover"]
+        has_bottom_bar = any(h in raw_text for h in ["home", "головна", "главная", "startseite"]) and any(
+            p in raw_text for p in ["profile", "prof ile", "inbox", "discover", "friends", "freunde"]
         )
+        has_feed_tabs = any(
+            re.search(r"\b" + re.escape(t) + r"\b", raw_text)
+            for t in ["for you", "foryou", "für dich", "fuer dich", "для вас"]
+        )
+        if has_bottom_bar or has_feed_tabs:
+            return False, []
+
         matched = [p for p in self.LIVE_ROOM_PATTERNS if re.search(p, raw_text)]
-        if len(matched) >= 2 and not has_bottom_bar:
+        if len(matched) >= 2:
             return True, matched
         if any(g in raw_text for g in ["send gift", "rose", "tap to join", "multi-guest", "share live", "shared the live", "host", "joined", "popular live", "daily ranking", "sag hallo", "herzgeste", "commission paid"]):
-            if not has_bottom_bar:
-                return True, matched or ["live_room"]
+            return True, matched or ["live_room"]
         return False, []
 
     def is_wrong_feed_tab(self, screen_image: Image.Image, text: Optional[str] = None) -> Tuple[bool, List[str]]:
@@ -715,6 +1015,10 @@ class ScreenDetector:
         # Extract screen text once to evaluate all state detectors efficiently (0.3-0.5s total)
         text = self.ocr.extract_text(screen_image).lower()
 
+        # 0. Mid-swipe / blank / buffering transition frame check
+        if self.is_transition_frame(screen_image, text=text):
+            return "transition", ["blank_or_black_frame"]
+
         # 1. Homescreen check
         is_home, h_markers = self.is_homescreen_open(screen_image, text=text)
         if is_home:
@@ -729,7 +1033,11 @@ class ScreenDetector:
         if popup:
             return "popup", [popup]
 
-        # 4. Search page check (CHECK BEFORE generic comment_input so search with keyboard is detected as search)
+        # 4. Search page & search results check
+        is_results, res_markers = self.is_search_results_open(screen_image, text=text)
+        if is_results:
+            return "search", res_markers + ["search_results"]
+
         is_srch, sr_markers = self.is_search_page_open(screen_image, text=text)
         if is_srch:
             return "search", sr_markers
@@ -886,19 +1194,61 @@ class ScreenDetector:
         metrics = self.extract_sidebar_metrics(screen_image)
         return metrics.get("likes")
 
+    def extract_content_signature(self, screen_image: Image.Image) -> str:
+        """
+        Extracts author handle (@...), hashtags, and caption text from the video overlay.
+        """
+        if not screen_image:
+            return ""
+        obs = self.ocr.extract_observations(screen_image)
+        body_texts = [
+            text.strip() for text, cx, cy, w, h in obs
+            if 0.20 <= cy <= 0.88 and cx < 0.80 and len(text.strip()) > 2
+        ]
+        return " ".join(body_texts[:6]).strip()
+
     def extract_likes_and_signature(self, screen_image: Image.Image) -> Tuple[Optional[str], str]:
         """
         Extracts the likes count from the dedicated zone and content signature (body text).
         Returns (likes_count_str, content_signature_str).
         """
         like_count = self.extract_likes_amount(screen_image)
-        obs = self.ocr.extract_observations(screen_image)
-        body_texts = [
-            text for text, cx, cy, w, h in obs
-            if 0.12 <= cy <= 0.90 and cx < 0.85 and len(text) > 2
-        ]
-        content_sig = " ".join(body_texts[:5]).strip()
+        content_sig = self.extract_content_signature(screen_image)
         return like_count, content_sig
+
+    def compute_visual_difference(self, before_image: Image.Image, after_image: Image.Image) -> Tuple[float, bool]:
+        """
+        Computes visual perceptual difference between two screenshots focusing on the central video viewport.
+        Avoids top status bar / header tabs and bottom navigation bar.
+        Returns (difference_score, is_changed) where score is in [0.0, 1.0].
+        A score >= 0.18 indicates significant visual scene change (new video).
+        """
+        if not before_image or not after_image:
+            return 1.0, True
+
+        w1, h1 = before_image.size
+        w2, h2 = after_image.size
+        if (w1, h1) != (w2, h2):
+            return 1.0, True
+
+        # Crop central video area: x: [0.08, 0.82], y: [0.16, 0.84]
+        box = (int(w1 * 0.08), int(h1 * 0.16), int(w1 * 0.82), int(h1 * 0.84))
+        c1 = before_image.crop(box)
+        c2 = after_image.crop(box)
+
+        # Grayscale normalized difference (resized to 64x64)
+        g1 = np.asarray(c1.convert("L").resize((64, 64), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+        g2 = np.asarray(c2.convert("L").resize((64, 64), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+        g_diff = float(np.mean(np.abs(g1 - g2)))
+
+        # Color normalized difference (resized to 32x32)
+        rgb1 = np.asarray(c1.resize((32, 32), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+        rgb2 = np.asarray(c2.resize((32, 32), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+        rgb_diff = float(np.mean(np.abs(rgb1 - rgb2)))
+
+        score = float(0.5 * g_diff + 0.5 * rgb_diff)
+        is_changed = score >= 0.18
+        return score, is_changed
 
     def did_video_change(
         self,
@@ -910,49 +1260,62 @@ class ScreenDetector:
         before_sig: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
-        Verifies whether the video on screen changed after a swipe gesture
-        by checking all available right-sidebar counters (likes, comments, saves, shares).
-
-        Verification logic:
-        1. If both before and after have 0 metrics detected: returns (False, "NO_METRICS:...").
-        2. If either before or after has 0 metrics: returns (False, "NO_METRICS:...").
-        3. If common metrics exist:
-           - If ANY common metric changed: returns (True, "Metrics changed:...").
-           - If ALL common metrics match identically: returns (False, "Metrics unchanged:...").
-        4. If no common metrics exist between before and after (e.g. due to white background
-           covering likes/comments on one screen and saves/shares on the other):
-           treats as changed since different metrics became visible.
+        Multi-modal video change verification:
+        1. Checks transition guard on after_image (black/blank frame).
+        2. Checks sidebar metrics (likes, comments, saves, shares).
+        3. Checks content signature (author handle and caption text).
+        4. Checks visual perceptual difference (central viewport image diff).
         """
+        # Transition guard: if after_image is nearly black or blank, signal transition
+        if self.is_transition_frame(after_image):
+            return False, "TRANSITION: Screen is in blank/buffering state"
+
+        # 1. Multi-metric sidebar check
         if before_metrics is None:
             if before_likes is not None:
                 before_metrics = {"likes": before_likes}
-            else:
+            elif before_image:
                 before_metrics = self.extract_sidebar_metrics(before_image)
+            else:
+                before_metrics = {}
 
         if after_metrics is None:
-            after_metrics = self.extract_sidebar_metrics(after_image)
+            after_metrics = self.extract_sidebar_metrics(after_image) if after_image else {}
 
-        # Check if zero metrics were detected
-        if not before_metrics and not after_metrics:
-            return False, "NO_METRICS: No sidebar metrics detected before or after swipe"
-
-        if not before_metrics:
-            return False, f"NO_METRICS: No sidebar metrics detected before swipe (after={after_metrics})"
-
-        if not after_metrics:
-            return False, f"NO_METRICS: No sidebar metrics detected after swipe (before={before_metrics})"
-
-        # Check overlapping metrics
         common_keys = set(before_metrics.keys()) & set(after_metrics.keys())
         if common_keys:
             changed_keys = [k for k in common_keys if before_metrics[k] != after_metrics[k]]
             if changed_keys:
                 changes = ", ".join(f"{k} {before_metrics[k]} -> {after_metrics[k]}" for k in sorted(changed_keys))
                 return True, f"Metrics changed: {changes}"
+
+        # 2. Content signature check
+        if before_sig is None and before_image:
+            before_sig = self.extract_content_signature(before_image)
+        after_sig = self.extract_content_signature(after_image) if after_image else ""
+
+        if before_sig and after_sig and len(before_sig) >= 4 and len(after_sig) >= 4:
+            words_before = set(before_sig.lower().split())
+            words_after = set(after_sig.lower().split())
+            overlap = len(words_before & words_after) / max(len(words_before), len(words_after))
+            if overlap < 0.40:
+                return True, f"Signature changed: '{before_sig[:25]}' -> '{after_sig[:25]}'"
+
+        # 3. Visual perceptual difference
+        if before_image and after_image:
+            diff_score, is_vis_changed = self.compute_visual_difference(before_image, after_image)
+            if is_vis_changed:
+                return True, f"Visual changed (diff={diff_score:.2f})"
             else:
-                same = ", ".join(f"{k}={before_metrics[k]}" for k in sorted(common_keys))
-                return False, f"Metrics unchanged ({same}) - still on the same video"
-        else:
-            # Partial overlap with no common keys: different metrics visible
-            return True, f"Different metrics visible (before: {before_metrics}, after: {after_metrics}) - video changed"
+                if common_keys:
+                    same = ", ".join(f"{k}={before_metrics[k]}" for k in sorted(common_keys))
+                    return False, f"Metrics unchanged ({same}) & visual diff low ({diff_score:.2f}) - same video"
+                return False, f"Visual unchanged (diff={diff_score:.2f}) - same video"
+
+        # Fallback when visual comparison was not possible
+        if common_keys:
+            same = ", ".join(f"{k}={before_metrics[k]}" for k in sorted(common_keys))
+            return False, f"Metrics unchanged ({same}) - still on same video"
+
+        return False, "NO_METRICS: Unable to confirm video change"
 
