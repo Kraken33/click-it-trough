@@ -1112,14 +1112,36 @@ class SessionRunner:
         safety_cfg = self.config.get("safety", {})
 
         try:
-            # 3. Optional Search Seeding if enabled in config
+            # 3. Schedule randomized niche searches during the session (if enabled)
             niche_cfg = self.config.get("niche", {})
-            if niche_cfg.get("seed_search_enabled", False) and self.trainer.seed_terms and not self._stop_event.is_set():
-                seed_term = random.choice(self.trainer.seed_terms)
-                seed_min = int(niche_cfg.get("seed_videos_min", 2))
-                seed_max = int(niche_cfg.get("seed_videos_max", niche_cfg.get("seed_videos_per_term", 4)))
-                seed_count = random.randint(min(seed_min, seed_max), max(seed_min, seed_max))
-                self.trigger_search_seeding(term=seed_term, videos_to_watch=seed_count)
+            seed_search_enabled = bool(niche_cfg.get("seed_search_enabled", False))
+            target_searches = 0
+            if seed_search_enabled and self.trainer.seed_terms:
+                s_min = int(niche_cfg.get("searches_per_session_min", 0))
+                s_max = int(niche_cfg.get("searches_per_session_max", 2))
+                target_searches = random.randint(min(s_min, s_max), max(s_min, s_max))
+
+            searches_completed = 0
+            used_seed_terms: list[str] = []
+            fyp_videos_since_last_search = 0
+
+            init_delay_min = int(niche_cfg.get("search_initial_delay_min", 5))
+            init_delay_max = int(niche_cfg.get("search_initial_delay_max", 10))
+            cooldown_min = int(niche_cfg.get("search_cooldown_min", 8))
+            cooldown_max = int(niche_cfg.get("search_cooldown_max", 15))
+
+            next_search_target = (
+                random.randint(min(init_delay_min, init_delay_max), max(init_delay_min, init_delay_max))
+                if target_searches > 0
+                else 999999
+            )
+            if target_searches > 0:
+                logger.info(
+                    f"Session scheduled with {target_searches} niche search(es). "
+                    f"First search scheduled after {next_search_target} FYP videos."
+                )
+            else:
+                logger.info("Session scheduled with 0 niche searches (pure organic FYP).")
 
             # Main Browsing Loop
             while not self._stop_event.is_set():
@@ -1345,6 +1367,36 @@ class SessionRunner:
                         )
                     except Exception as e:
                         logger.error(f"Error persisting video interaction: {e}")
+
+                fyp_videos_since_last_search += 1
+
+                # Check if scheduled randomized niche search should trigger
+                if (
+                    searches_completed < target_searches
+                    and fyp_videos_since_last_search >= next_search_target
+                    and not self._stop_event.is_set()
+                ):
+                    available_terms = [t for t in self.trainer.seed_terms if t not in used_seed_terms]
+                    if not available_terms:
+                        used_seed_terms.clear()
+                        available_terms = list(self.trainer.seed_terms)
+                    seed_term = random.choice(available_terms) if available_terms else random.choice(self.trainer.seed_terms)
+                    used_seed_terms.append(seed_term)
+
+                    seed_min = int(niche_cfg.get("seed_videos_min", 2))
+                    seed_max = int(niche_cfg.get("seed_videos_max", niche_cfg.get("seed_videos_per_term", 4)))
+                    seed_count = random.randint(min(seed_min, seed_max), max(seed_min, seed_max))
+
+                    self._broadcast_status(
+                        f"Random niche search ({searches_completed + 1}/{target_searches}): '{seed_term}'"
+                    )
+                    self.trigger_search_seeding(term=seed_term, videos_to_watch=seed_count)
+                    searches_completed += 1
+                    fyp_videos_since_last_search = 0
+                    next_search_target = random.randint(min(cooldown_min, cooldown_max), max(cooldown_min, cooldown_max))
+
+                    # Seeding recovers to clean FYP feed automatically; skip normal next swipe
+                    continue
 
                 # Step 8: Biometric Gesture to Next Video
                 # Occasional re-watch swipe back with range sampling

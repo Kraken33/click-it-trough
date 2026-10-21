@@ -81,6 +81,12 @@ niche:
   seed_video_dwell_min_sec: 7
   seed_video_dwell_max_sec: 15
   seed_videos_per_term: 3
+  searches_per_session_min: 0
+  searches_per_session_max: 2
+  search_initial_delay_min: 5
+  search_initial_delay_max: 10
+  search_cooldown_min: 8
+  search_cooldown_max: 15
 dwell_time:
   min_seconds: 3
   max_seconds: 9.5

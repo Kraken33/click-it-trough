@@ -1778,10 +1778,53 @@ export default function App() {
                             }}
                             className="accent-pink-500 rounded cursor-pointer"
                           />
-                          <span className="text-xs text-gray-300 font-medium">Auto-seed search at warming start</span>
+                          <span className="text-xs text-gray-300 font-medium">Random niche search during sessions</span>
                         </label>
                         <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
-                          <span>Videos/query:</span>
+                          <span>Searches/session:</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={config.niche?.searches_per_session_max ?? 5}
+                            value={config.niche?.searches_per_session_min ?? 0}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: {
+                                  ...config.niche,
+                                  searches_per_session_min: Number(e.target.value),
+                                },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-11 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                          <span>–</span>
+                          <input
+                            type="number"
+                            min={config.niche?.searches_per_session_min ?? 0}
+                            max={10}
+                            value={config.niche?.searches_per_session_max ?? 2}
+                            onChange={(e) => {
+                              const updated = {
+                                ...config,
+                                niche: {
+                                  ...config.niche,
+                                  searches_per_session_max: Number(e.target.value),
+                                },
+                              };
+                              setConfig(updated);
+                              handleSaveConfig(updated);
+                            }}
+                            className="w-11 bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-1 py-0.5 text-center outline-none focus:border-pink-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-gray-400 pt-1 border-t border-gray-800/60">
+                        <span>Videos/query:</span>
+                        <div className="flex items-center gap-1.5">
                           <input
                             type="number"
                             min={1}
